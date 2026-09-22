@@ -9,7 +9,8 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "node -e \"fs.rmSync('dist', { recursive: true, force: true }); try { fs.rmSync('server.js', { force: true }); } catch {}\"",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:security": "tsx test-security.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

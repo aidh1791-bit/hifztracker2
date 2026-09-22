@@ -69,6 +69,7 @@ class SyncQueueService {
   }
 
   private loadQueue(): void {
+    if (typeof localStorage === 'undefined') return;
     try {
       const raw = localStorage.getItem(QUEUE_STORAGE_KEY);
       if (raw) {
@@ -81,6 +82,7 @@ class SyncQueueService {
   }
 
   private saveQueue(): void {
+    if (typeof localStorage === 'undefined') return;
     try {
       localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(this.queue));
     } catch (err) {

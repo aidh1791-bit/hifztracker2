@@ -19,19 +19,19 @@ import {
 } from './src/db/repository.ts';
 import {
   resolveAuthorisation,
+  requireAuth,
+  requireAdmin,
   requireStudentAccess,
   AuthRequest
 } from './src/middleware/auth.ts';
 
-async function startServer() {
+export function createExpressApp() {
   const app = express();
-  const PORT = 3000;
-
   app.use(express.json());
 
   // --- API Routes (Defined FIRST) ---
 
-  // Health check
+  // Health check (Public)
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
@@ -39,15 +39,15 @@ async function startServer() {
   // Attach database authorization resolver to all API routes
   app.use('/api', resolveAuthorisation as any);
 
-  // Database status and auto-seed
-  app.get('/api/database/status', async (req: AuthRequest, res) => {
+  // Database status
+  app.get('/api/database/status', requireAuth as any, async (req: AuthRequest, res) => {
     try {
       const students = await getAllStudents();
       res.json({
         connected: true,
         database: process.env.SQL_DB_NAME || 'cloudsql',
         studentCount: students.length,
-        userRole: req.user?.role || 'anonymous'
+        userRole: req.user?.role || 'unauthenticated'
       });
     } catch (error: any) {
       console.error('Database health check failed:', error);
@@ -58,10 +58,8 @@ async function startServer() {
     }
   });
 
-  app.post('/api/database/seed', async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin' && req.user?.role !== 'anonymous') {
-      return res.status(403).json({ error: 'Only administrators can seed database' });
-    }
+  // Database seed (Admin Only)
+  app.post('/api/database/seed', requireAdmin as any, async (req: AuthRequest, res) => {
     try {
       const result = await seedInitialMadrasahDataIfEmpty();
       res.json(result);
@@ -71,12 +69,12 @@ async function startServer() {
     }
   });
 
-  // Students endpoints (Role-scoped)
-  app.get('/api/students', async (req: AuthRequest, res) => {
+  // Students endpoints (Role-scoped, Authentication Required)
+  app.get('/api/students', requireAuth as any, async (req: AuthRequest, res) => {
     try {
       const list = await getAllStudents();
-      // If user is parent or teacher, scope strictly to their allowed students
-      if (req.user && req.user.role !== 'admin' && req.user.role !== 'anonymous') {
+      // If user is parent or teacher, scope strictly to their allowed students only
+      if (req.user!.role !== 'admin') {
         const scoped = list.filter(s => req.user!.allowedStudentIds.includes(s.id));
         return res.json(scoped);
       }
@@ -87,10 +85,8 @@ async function startServer() {
     }
   });
 
-  app.post('/api/students', async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin' && req.user?.role !== 'anonymous') {
-      return res.status(403).json({ error: 'Forbidden: Only administrators can modify student enrollment roster' });
-    }
+  // Student mutations (Strict Admin Only)
+  app.post('/api/students', requireAdmin as any, async (req: AuthRequest, res) => {
     try {
       const saved = await upsertStudent(req.body);
       res.json(saved);
@@ -100,10 +96,7 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/students/:id', async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin' && req.user?.role !== 'anonymous') {
-      return res.status(403).json({ error: 'Forbidden: Only administrators can delete student records' });
-    }
+  app.delete('/api/students/:id', requireAdmin as any, async (req: AuthRequest, res) => {
     try {
       await deleteStudentById(req.params.id);
       res.json({ success: true, deletedId: req.params.id });
@@ -118,6 +111,11 @@ async function startServer() {
     try {
       const studentId = req.query.studentId as string | undefined;
       const records = await getHifzRecords(studentId);
+      // Non-admins must only receive records belonging to their allowed student IDs
+      if (req.user!.role !== 'admin') {
+        const allowed = records.filter(r => req.user!.allowedStudentIds.includes(r.studentId));
+        return res.json(allowed);
+      }
       res.json(records);
     } catch (error: any) {
       console.error('Failed to get hifz records:', error);
@@ -140,6 +138,10 @@ async function startServer() {
     try {
       const studentId = req.query.studentId as string | undefined;
       const records = await getHomeLearning(studentId);
+      if (req.user!.role !== 'admin') {
+        const allowed = records.filter(r => req.user!.allowedStudentIds.includes(r.studentId));
+        return res.json(allowed);
+      }
       res.json(records);
     } catch (error: any) {
       console.error('Failed to get home learning records:', error);
@@ -162,6 +164,10 @@ async function startServer() {
     try {
       const studentId = req.query.studentId as string | undefined;
       const records = await getTarbiyah(studentId);
+      if (req.user!.role !== 'admin') {
+        const allowed = records.filter(r => req.user!.allowedStudentIds.includes(r.studentId));
+        return res.json(allowed);
+      }
       res.json(records);
     } catch (error: any) {
       console.error('Failed to get tarbiyah records:', error);
@@ -184,6 +190,10 @@ async function startServer() {
     try {
       const studentId = req.query.studentId as string | undefined;
       const evals = await getEvaluations(studentId);
+      if (req.user!.role !== 'admin') {
+        const allowed = evals.filter(r => req.user!.allowedStudentIds.includes(r.studentId));
+        return res.json(allowed);
+      }
       res.json(evals);
     } catch (error: any) {
       console.error('Failed to get evaluations:', error);
@@ -201,8 +211,8 @@ async function startServer() {
     }
   });
 
-  // Madrasah Settings
-  app.get('/api/settings/:key', async (req, res) => {
+  // Madrasah Settings (Authentication Required for Read, Admin Required for Update)
+  app.get('/api/settings/:key', requireAuth as any, async (req: AuthRequest, res) => {
     try {
       const data = await getSettings(req.params.key);
       res.json(data);
@@ -212,10 +222,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/settings/:key', async (req: AuthRequest, res) => {
-    if (req.user?.role !== 'admin' && req.user?.role !== 'anonymous') {
-      return res.status(403).json({ error: 'Forbidden: Only administrators can update institute settings' });
-    }
+  app.post('/api/settings/:key', requireAdmin as any, async (req: AuthRequest, res) => {
     try {
       await saveSettings(req.params.key, req.body);
       res.json({ success: true });
@@ -224,6 +231,13 @@ async function startServer() {
       res.status(500).json({ error: error.message || 'Error saving settings' });
     }
   });
+
+  return app;
+}
+
+async function startServer() {
+  const app = createExpressApp();
+  const PORT = 3000;
 
   // Auto-seed initial madrasah data on server boot
   setTimeout(async () => {
@@ -254,4 +268,8 @@ async function startServer() {
   });
 }
 
-startServer();
+// Only auto-start if run directly as application entry point
+const isDirectRun = process.env.NODE_ENV !== 'test' && !process.argv.some(arg => arg.includes('test'));
+if (isDirectRun) {
+  startServer();
+}

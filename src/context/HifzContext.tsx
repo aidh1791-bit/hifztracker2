@@ -1086,9 +1086,19 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const enterStudentParentPortal = (studentId: string, googleEmail?: string) => {
     let targetStudentId = studentId;
     if (googleEmail) {
-      const matched = findStudentByGmail(googleEmail);
+      const normalizedEmail = googleEmail.toLowerCase().trim();
+      const matched = findStudentByGmail(normalizedEmail);
       if (matched) {
         targetStudentId = matched.id;
+      } else {
+        // Verify against student's recorded parent or student email
+        const targetStudent = students.find(s => s.id === studentId);
+        const matchesParent = targetStudent?.parentEmail?.toLowerCase().trim() === normalizedEmail;
+        const matchesStudent = targetStudent?.studentEmail?.toLowerCase().trim() === normalizedEmail;
+        if (!matchesParent && !matchesStudent) {
+          console.warn('[Security] Unauthorized student access attempt prevented for email:', normalizedEmail);
+          return;
+        }
       }
       setParentSettings(prev => ({ ...prev, linkedChildGoogleEmail: googleEmail }));
     }
@@ -1329,20 +1339,21 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // Fallback parent
-      const firstStudent = students[0];
+      // Unlinked account: authenticated with Firebase, but no student currently associated with this email
       setCurrentUser({
         role: 'parent',
         email: userEmail,
         displayName: user.displayName || 'Parent User',
-        studentId: firstStudent?.id,
-        allowedStudentIds: firstStudent ? [firstStudent.id] : []
+        studentId: undefined,
+        allowedStudentIds: []
       });
-      if (firstStudent) setSelectedStudentId(firstStudent.id);
       setUserRole('parent');
       setPortalMode('student-parent');
       setActiveTab('dashboard');
-      return { success: true, message: 'Logged in successfully via Firebase Auth.' };
+      return {
+        success: true,
+        message: 'Logged in successfully. Note: This email is not yet linked to an active student enrollment. Please contact the administrator.'
+      };
     } catch (err: any) {
       console.error('Firebase Email Login failed:', err);
       let msg = err.message || 'Firebase authentication failed';
