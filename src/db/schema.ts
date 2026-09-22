@@ -1,0 +1,153 @@
+import { pgTable, serial, text, integer, boolean, timestamp } from 'drizzle-orm/pg-core';
+import { relations } from 'drizzle-orm';
+
+export const users = pgTable('users', {
+  id: serial('id').primaryKey(),
+  uid: text('uid').notNull().unique(), // Firebase Auth UID
+  email: text('email').notNull(),
+  displayName: text('display_name'),
+  role: text('role').notNull().default('parent'), // 'admin' | 'teacher' | 'parent'
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const students = pgTable('students', {
+  id: text('id').primaryKey(), // std-xxx
+  rollNumber: text('roll_number').notNull().unique(),
+  name: text('name').notNull(),
+  dob: text('dob'),
+  gender: text('gender'),
+  classGroup: text('class_group').notNull(),
+  circleCode: text('circle_code').notNull(),
+  teacherName: text('teacher_name').notNull(),
+  enrollmentDate: text('enrollment_date').notNull(),
+  status: text('status').notNull().default('active'),
+  currentJuz: integer('current_juz').notNull().default(1),
+  currentSurah: text('current_surah').notNull().default('Al-Fatihah'),
+  currentAyah: integer('current_ayah').notNull().default(1),
+  parentName: text('parent_name').notNull(),
+  parentEmail: text('parent_email').notNull(),
+  parentPhone: text('parent_phone').notNull(),
+  studentEmail: text('student_email'),
+  homeAddress: text('home_address'),
+  notes: text('notes'),
+  enrollmentCode: text('enrollment_code').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const dailyHifzRecords = pgTable('daily_hifz_records', {
+  id: serial('id').primaryKey(),
+  studentId: text('student_id')
+    .notNull()
+    .references(() => students.id, { onDelete: 'cascade' }),
+  date: text('date').notNull(),
+  day: text('day').notNull(),
+  attendance: text('attendance').notNull().default('present'),
+  sabaqAmount: text('sabaq_amount').notNull().default(''),
+  sabaqMistakes: integer('sabaq_mistakes').notNull().default(0),
+  sabaqPassed: boolean('sabaq_passed'),
+  sabaqParaAmount: text('sabaq_para_amount').notNull().default(''),
+  sabaqParaMistakes: integer('sabaq_para_mistakes').notNull().default(0),
+  sabaqParaPassed: boolean('sabaq_para_passed'),
+  dawr1Amount: text('dawr1_amount').notNull().default(''),
+  dawr1Mistakes: integer('dawr1_mistakes').notNull().default(0),
+  dawr1Passed: boolean('dawr1_passed'),
+  dawr2Amount: text('dawr2_amount').notNull().default(''),
+  dawr2Mistakes: integer('dawr2_mistakes').notNull().default(0),
+  dawr2Passed: boolean('dawr2_passed'),
+  comments: text('comments').notNull().default(''),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const dailyHomeLearningRecords = pgTable('daily_home_learning_records', {
+  id: serial('id').primaryKey(),
+  studentId: text('student_id')
+    .notNull()
+    .references(() => students.id, { onDelete: 'cascade' }),
+  date: text('date').notNull(),
+  day: text('day').notNull(),
+  sabaqMins: integer('sabaq_mins').notNull().default(0),
+  sabaqParaMins: integer('sabaq_para_mins').notNull().default(0),
+  dawr1Mins: integer('dawr1_mins').notNull().default(0),
+  dawr2Mins: integer('dawr2_mins').notNull().default(0),
+  parentSigned: boolean('parent_signed').notNull().default(false),
+  parentComments: text('parent_comments').notNull().default(''),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const dailyTarbiyahRecords = pgTable('daily_tarbiyah_records', {
+  id: serial('id').primaryKey(),
+  studentId: text('student_id')
+    .notNull()
+    .references(() => students.id, { onDelete: 'cascade' }),
+  date: text('date').notNull(),
+  day: text('day').notNull(),
+  fajr: text('fajr').notNull().default('none'),
+  dhuhr: text('dhuhr').notNull().default('none'),
+  asr: text('asr').notNull().default('none'),
+  maghrib: text('maghrib').notNull().default('none'),
+  ishaa: text('ishaa').notNull().default('none'),
+  dailySadaqah: boolean('daily_sadaqah').notNull().default(false),
+  eesaalThawaab: boolean('eesaal_thawaab').notNull().default(false),
+  dailyDuasDhikr: boolean('daily_duas_dhikr').notNull().default(false),
+  dailyQuranWird: boolean('daily_quran_wird').notNull().default(false),
+  parentSignature: boolean('parent_signature').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const weeklyEvaluations = pgTable('weekly_evaluations', {
+  id: serial('id').primaryKey(),
+  studentId: text('student_id')
+    .notNull()
+    .references(() => students.id, { onDelete: 'cascade' }),
+  weekCommencing: text('week_commencing').notNull(),
+  overallGrade: text('overall_grade').notNull().default('Not yet assessed'),
+  performanceScore: integer('performance_score').notNull().default(0),
+  teacherSigned: boolean('teacher_signed').notNull().default(false),
+  parentSigned: boolean('parent_signed').notNull().default(false),
+  signedDate: text('signed_date'),
+  hadithId: integer('hadith_id').notNull().default(1),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const madrasahSettings = pgTable('madrasah_settings', {
+  id: serial('id').primaryKey(),
+  key: text('key').notNull().unique(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// Relations
+export const studentsRelations = relations(students, ({ many }) => ({
+  dailyHifzRecords: many(dailyHifzRecords),
+  dailyHomeLearningRecords: many(dailyHomeLearningRecords),
+  dailyTarbiyahRecords: many(dailyTarbiyahRecords),
+  weeklyEvaluations: many(weeklyEvaluations),
+}));
+
+export const dailyHifzRecordsRelations = relations(dailyHifzRecords, ({ one }) => ({
+  student: one(students, {
+    fields: [dailyHifzRecords.studentId],
+    references: [students.id],
+  }),
+}));
+
+export const dailyHomeLearningRecordsRelations = relations(dailyHomeLearningRecords, ({ one }) => ({
+  student: one(students, {
+    fields: [dailyHomeLearningRecords.studentId],
+    references: [students.id],
+  }),
+}));
+
+export const dailyTarbiyahRecordsRelations = relations(dailyTarbiyahRecords, ({ one }) => ({
+  student: one(students, {
+    fields: [dailyTarbiyahRecords.studentId],
+    references: [students.id],
+  }),
+}));
+
+export const weeklyEvaluationsRelations = relations(weeklyEvaluations, ({ one }) => ({
+  student: one(students, {
+    fields: [weeklyEvaluations.studentId],
+    references: [students.id],
+  }),
+}));

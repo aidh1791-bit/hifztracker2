@@ -1,0 +1,6 @@
+{
+  "name": "Hifz Class Tracker & Tarbiyah Log",
+  "description": "Interactive Quran memorization tracker for students, teachers, and parents with Sabaq, Sabaq Para, Dawr revision, attendance, spiritual progress, and automated weekly reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
