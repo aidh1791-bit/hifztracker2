@@ -54,12 +54,12 @@ async function runAudit() {
 
   try {
     // ----------------------------------------------------
-    // Test 1: No Token -> Student Records
+    // Test 1: Anonymous / No Token -> Student Records (Expect 403)
     // ----------------------------------------------------
     const res1 = await fetch(`${baseUrl}/api/records/hifz?studentId=std-1`);
     assert(
-      res1.status === 401,
-      'Test 1: Unauthenticated request to GET /api/records/hifz returns 401',
+      res1.status === 403,
+      'Test 1: Anonymous request to GET /api/records/hifz returns 403 Forbidden by default',
       `Got status ${res1.status}`
     );
 
@@ -77,7 +77,7 @@ async function runAudit() {
     );
 
     // ----------------------------------------------------
-    // Test 3: Client Header Spoofing 'x-user-role: admin'
+    // Test 3: Client Header Spoofing 'x-user-role: admin' -> GET /api/students (Expect 403)
     // ----------------------------------------------------
     const res3 = await fetch(`${baseUrl}/api/students`, {
       headers: {
@@ -86,8 +86,8 @@ async function runAudit() {
       }
     });
     assert(
-      res3.status === 401,
-      'Test 3: Client header "x-user-role: admin" cannot bypass authentication (Returns 401)',
+      res3.status === 403,
+      'Test 3: Anonymous request with client headers cannot access /api/students (Returns 403 Forbidden)',
       `Got status ${res3.status}`
     );
 
@@ -107,7 +107,7 @@ async function runAudit() {
     );
 
     // ----------------------------------------------------
-    // Test 5: Client Header Spoofing on Teacher Circle
+    // Test 5: Client Header Spoofing on Teacher Circle (Expect 403)
     // ----------------------------------------------------
     const res5 = await fetch(`${baseUrl}/api/records/hifz?studentId=std-1`, {
       headers: {
@@ -116,8 +116,8 @@ async function runAudit() {
       }
     });
     assert(
-      res5.status === 401,
-      'Test 5: Client headers "x-user-role: teacher" and "x-circle-code" cannot access records (Returns 401)',
+      res5.status === 403,
+      'Test 5: Anonymous request with fake teacher headers rejected with 403 Forbidden',
       `Got status ${res5.status}`
     );
 
@@ -263,6 +263,32 @@ async function runAudit() {
       adminAccessStatus === 200,
       'Test 10d: Verified Administrator has universal authorized access (Returns 200)',
       `Got status ${adminAccessStatus}`
+    );
+
+    // 10e: Anonymous User denied by default on student-scoped routes & allowedStudentIds is empty
+    let anonAccessStatus = 0;
+    const mockAnonReq: Partial<AuthRequest> = {
+      query: { studentId: 'any-student' },
+      user: {
+        uid: '',
+        email: '',
+        role: 'anonymous',
+        allowedStudentIds: []
+      }
+    };
+    requireStudentAccess(
+      mockAnonReq as AuthRequest,
+      createMockRes(code => { anonAccessStatus = code; }) as any,
+      () => { anonAccessStatus = 200; }
+    );
+    assert(
+      anonAccessStatus === 403,
+      'Test 10e: Anonymous user receives 403 on student-scoped routes',
+      `Got status ${anonAccessStatus}`
+    );
+    assert(
+      Array.isArray(mockAnonReq.user?.allowedStudentIds) && mockAnonReq.user?.allowedStudentIds.length === 0,
+      'Test 10f: Anonymous user allowedStudentIds is explicitly empty ([])'
     );
 
   } finally {

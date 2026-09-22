@@ -69,8 +69,8 @@ export function createExpressApp() {
     }
   });
 
-  // Students endpoints (Role-scoped, Authentication Required)
-  app.get('/api/students', requireAuth as any, async (req: AuthRequest, res) => {
+  // Students endpoints (Role-scoped, requires student access permissions)
+  app.get('/api/students', requireStudentAccess as any, async (req: AuthRequest, res) => {
     try {
       const list = await getAllStudents();
       // If user is parent or teacher, scope strictly to their allowed students only

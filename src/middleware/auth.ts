@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { adminAuth } from '../lib/firebase-admin.ts';
 import { getAllStudents, getSettings } from '../db/repository.ts';
 
-export type UserRole = 'admin' | 'teacher' | 'parent' | 'unassigned' | 'unauthenticated';
+export type UserRole = 'admin' | 'teacher' | 'parent' | 'unassigned' | 'unauthenticated' | 'anonymous';
 
 export interface AuthenticatedUser {
   uid: string;
@@ -22,7 +22,7 @@ export interface AuthRequest extends Request {
  * - NO client-controlled headers (x-user-role, x-circle-code, x-user-email) are trusted for authority.
  * - NO unverified JWT payload decoding fallback is permitted.
  * - If token verification fails, the request is immediately rejected with 401.
- * - If no token is provided, the user is classified as unauthenticated with ZERO allowed students.
+ * - Anonymous users are explicitly assigned role: 'anonymous' with allowedStudentIds: [].
  */
 export const resolveAuthorisation = async (
   req: AuthRequest,
@@ -31,16 +31,16 @@ export const resolveAuthorisation = async (
 ) => {
   const authHeader = req.headers.authorization;
 
-  // Default unauthenticated state (Zero-Trust, Default-Deny)
+  // Default anonymous state (Zero-Trust, Default-Deny, explicitly empty allowedStudentIds)
   req.user = {
     uid: '',
     email: '',
-    role: 'unauthenticated',
+    role: 'anonymous',
     allowedStudentIds: []
   };
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    // No token provided; leave as unauthenticated and continue
+    // No token provided; leave as anonymous with empty student list
     return next();
   }
 
@@ -54,6 +54,17 @@ export const resolveAuthorisation = async (
     const decoded = await adminAuth.verifyIdToken(token);
     const uid = decoded.uid;
     const email = (decoded.email || '').toLowerCase().trim();
+
+    // Check for Firebase anonymous authentication provider
+    if (!email || decoded.firebase?.sign_in_provider === 'anonymous') {
+      req.user = {
+        uid,
+        email: email || '',
+        role: 'anonymous',
+        allowedStudentIds: []
+      };
+      return next();
+    }
 
     // 2. Fetch server-authoritative roster from the database
     const allStudents = await getAllStudents();
@@ -150,7 +161,7 @@ export const requireAuth = (
   res: Response,
   next: NextFunction
 ) => {
-  if (!req.user || req.user.role === 'unauthenticated' || !req.user.uid) {
+  if (!req.user || req.user.role === 'anonymous' || req.user.role === 'unauthenticated' || !req.user.uid) {
     return res.status(401).json({
       error: 'Unauthorized: Valid authentication token required',
       code: 'AUTH_REQUIRED'
@@ -167,7 +178,7 @@ export const requireAdmin = (
   res: Response,
   next: NextFunction
 ) => {
-  if (!req.user || req.user.role === 'unauthenticated' || !req.user.uid) {
+  if (!req.user || req.user.role === 'anonymous' || req.user.role === 'unauthenticated' || !req.user.uid) {
     return res.status(401).json({
       error: 'Unauthorized: Valid authentication token required',
       code: 'AUTH_REQUIRED'
@@ -184,16 +195,20 @@ export const requireAdmin = (
 
 /**
  * Gatekeeper: Verifies that the requester has server-authorized permission to access the specified student.
+ * 
+ * Strict Default-Deny: Anonymous and unauthenticated users are rejected by default with 403 Forbidden
+ * on all student-scoped routes.
  */
 export const requireStudentAccess = (
   req: AuthRequest,
   res: Response,
   next: NextFunction
 ) => {
-  if (!req.user || req.user.role === 'unauthenticated' || !req.user.uid) {
-    return res.status(401).json({
-      error: 'Unauthorized: Valid authentication token required',
-      code: 'AUTH_REQUIRED'
+  // Reject anonymous or unauthenticated users with 403 Forbidden by default
+  if (!req.user || req.user.role === 'anonymous' || req.user.role === 'unauthenticated' || !req.user.uid) {
+    return res.status(403).json({
+      error: 'Forbidden: Anonymous access to student-scoped routes is denied by default',
+      code: 'STUDENT_ACCESS_DENIED'
     });
   }
 
@@ -212,6 +227,15 @@ export const requireStudentAccess = (
         error: 'Forbidden: You do not have permission to access records for this student',
         code: 'STUDENT_ACCESS_DENIED',
         studentId
+      });
+    }
+  } else {
+    // If accessing a student collection without specifying studentId,
+    // user must have non-empty allowedStudentIds
+    if (!req.user.allowedStudentIds || req.user.allowedStudentIds.length === 0) {
+      return res.status(403).json({
+        error: 'Forbidden: No student access permitted for this account',
+        code: 'STUDENT_ACCESS_DENIED'
       });
     }
   }
