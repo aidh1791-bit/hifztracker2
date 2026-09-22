@@ -133,8 +133,11 @@ export function calculateWeeklySummary(
   const performanceScore = Math.min(100, Math.round(rawScore));
 
   // Standardized Grade Boundaries: 90, 80, 70, 60
+  // Build Plan mandate: A minimum number of real evaluated lessons (provisional: 3) is required
+  // before producing a full weekly grade. Until then, report as 'Not yet assessed'.
+  const MINIMUM_ASSESSMENTS_FOR_GRADE = 3;
   let overallGrade: 'A+' | 'A' | 'B' | 'C' | 'Needs Attention' | 'Not yet assessed';
-  if (totalEvaluatedLessons === 0) overallGrade = 'Not yet assessed';
+  if (totalEvaluatedLessons < MINIMUM_ASSESSMENTS_FOR_GRADE) overallGrade = 'Not yet assessed';
   else if (performanceScore >= 90) overallGrade = 'A+';
   else if (performanceScore >= 80) overallGrade = 'A';
   else if (performanceScore >= 70) overallGrade = 'B';

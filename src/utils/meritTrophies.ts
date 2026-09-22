@@ -127,9 +127,8 @@ export function calculateStudentMerit(
     if (hl.parentSigned) homeStudyPoints += 5;
   });
 
-  // Base onboarding points so student starts on the path
-  const basePoints = 30;
-  const totalPoints = basePoints + sabaqPoints + sabaqParaPoints + dawrPoints + attendancePoints + prayerPoints + homeStudyPoints;
+  // Merit points strictly calculated from evaluated records (no unearned baseline)
+  const totalPoints = sabaqPoints + sabaqParaPoints + dawrPoints + attendancePoints + prayerPoints + homeStudyPoints;
 
   // Determine unlocked trophy
   let currentTrophy = trophies[0];

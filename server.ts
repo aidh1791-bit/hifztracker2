@@ -15,9 +15,13 @@ import {
   saveEvaluation,
   getSettings,
   saveSettings,
-  seedInitialMadrasahDataIfEmpty,
-  getOrCreateUser
+  seedInitialMadrasahDataIfEmpty
 } from './src/db/repository.ts';
+import {
+  resolveAuthorisation,
+  requireStudentAccess,
+  AuthRequest
+} from './src/middleware/auth.ts';
 
 async function startServer() {
   const app = express();
@@ -32,14 +36,18 @@ async function startServer() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  // Attach database authorization resolver to all API routes
+  app.use('/api', resolveAuthorisation as any);
+
   // Database status and auto-seed
-  app.get('/api/database/status', async (req, res) => {
+  app.get('/api/database/status', async (req: AuthRequest, res) => {
     try {
       const students = await getAllStudents();
       res.json({
         connected: true,
         database: process.env.SQL_DB_NAME || 'cloudsql',
-        studentCount: students.length
+        studentCount: students.length,
+        userRole: req.user?.role || 'anonymous'
       });
     } catch (error: any) {
       console.error('Database health check failed:', error);
@@ -50,7 +58,10 @@ async function startServer() {
     }
   });
 
-  app.post('/api/database/seed', async (req, res) => {
+  app.post('/api/database/seed', async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin' && req.user?.role !== 'anonymous') {
+      return res.status(403).json({ error: 'Only administrators can seed database' });
+    }
     try {
       const result = await seedInitialMadrasahDataIfEmpty();
       res.json(result);
@@ -60,25 +71,15 @@ async function startServer() {
     }
   });
 
-  // User Authentication & Firebase Account Sync
-  app.post('/api/auth/sync-user', async (req, res) => {
-    try {
-      const { uid, email, displayName, role } = req.body;
-      if (!uid || !email) {
-        return res.status(400).json({ error: 'Missing uid or email' });
-      }
-      const user = await getOrCreateUser(uid, email, displayName, role || 'parent');
-      res.json(user);
-    } catch (error: any) {
-      console.error('Failed to sync user:', error);
-      res.status(500).json({ error: error.message || 'Error syncing user in database' });
-    }
-  });
-
-  // Students endpoints
-  app.get('/api/students', async (req, res) => {
+  // Students endpoints (Role-scoped)
+  app.get('/api/students', async (req: AuthRequest, res) => {
     try {
       const list = await getAllStudents();
+      // If user is parent or teacher, scope strictly to their allowed students
+      if (req.user && req.user.role !== 'admin' && req.user.role !== 'anonymous') {
+        const scoped = list.filter(s => req.user!.allowedStudentIds.includes(s.id));
+        return res.json(scoped);
+      }
       res.json(list);
     } catch (error: any) {
       console.error('Failed to get students:', error);
@@ -86,7 +87,10 @@ async function startServer() {
     }
   });
 
-  app.post('/api/students', async (req, res) => {
+  app.post('/api/students', async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin' && req.user?.role !== 'anonymous') {
+      return res.status(403).json({ error: 'Forbidden: Only administrators can modify student enrollment roster' });
+    }
     try {
       const saved = await upsertStudent(req.body);
       res.json(saved);
@@ -96,7 +100,10 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/students/:id', async (req, res) => {
+  app.delete('/api/students/:id', async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin' && req.user?.role !== 'anonymous') {
+      return res.status(403).json({ error: 'Forbidden: Only administrators can delete student records' });
+    }
     try {
       await deleteStudentById(req.params.id);
       res.json({ success: true, deletedId: req.params.id });
@@ -106,8 +113,8 @@ async function startServer() {
     }
   });
 
-  // Daily Hifz records
-  app.get('/api/records/hifz', async (req, res) => {
+  // Daily Hifz records (Protected by student access boundary)
+  app.get('/api/records/hifz', requireStudentAccess as any, async (req: AuthRequest, res) => {
     try {
       const studentId = req.query.studentId as string | undefined;
       const records = await getHifzRecords(studentId);
@@ -118,7 +125,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/records/hifz', async (req, res) => {
+  app.post('/api/records/hifz', requireStudentAccess as any, async (req: AuthRequest, res) => {
     try {
       const record = await saveHifzRecord(req.body);
       res.json(record);
@@ -129,7 +136,7 @@ async function startServer() {
   });
 
   // Home Learning records
-  app.get('/api/records/home', async (req, res) => {
+  app.get('/api/records/home', requireStudentAccess as any, async (req: AuthRequest, res) => {
     try {
       const studentId = req.query.studentId as string | undefined;
       const records = await getHomeLearning(studentId);
@@ -140,7 +147,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/records/home', async (req, res) => {
+  app.post('/api/records/home', requireStudentAccess as any, async (req: AuthRequest, res) => {
     try {
       const record = await saveHomeLearning(req.body);
       res.json(record);
@@ -151,7 +158,7 @@ async function startServer() {
   });
 
   // Daily Tarbiyah records
-  app.get('/api/records/tarbiyah', async (req, res) => {
+  app.get('/api/records/tarbiyah', requireStudentAccess as any, async (req: AuthRequest, res) => {
     try {
       const studentId = req.query.studentId as string | undefined;
       const records = await getTarbiyah(studentId);
@@ -162,7 +169,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/records/tarbiyah', async (req, res) => {
+  app.post('/api/records/tarbiyah', requireStudentAccess as any, async (req: AuthRequest, res) => {
     try {
       const record = await saveTarbiyah(req.body);
       res.json(record);
@@ -173,7 +180,7 @@ async function startServer() {
   });
 
   // Weekly Evaluations
-  app.get('/api/evaluations', async (req, res) => {
+  app.get('/api/evaluations', requireStudentAccess as any, async (req: AuthRequest, res) => {
     try {
       const studentId = req.query.studentId as string | undefined;
       const evals = await getEvaluations(studentId);
@@ -184,7 +191,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/evaluations', async (req, res) => {
+  app.post('/api/evaluations', requireStudentAccess as any, async (req: AuthRequest, res) => {
     try {
       const saved = await saveEvaluation(req.body);
       res.json(saved);
@@ -205,7 +212,10 @@ async function startServer() {
     }
   });
 
-  app.post('/api/settings/:key', async (req, res) => {
+  app.post('/api/settings/:key', async (req: AuthRequest, res) => {
+    if (req.user?.role !== 'admin' && req.user?.role !== 'anonymous') {
+      return res.status(403).json({ error: 'Forbidden: Only administrators can update institute settings' });
+    }
     try {
       await saveSettings(req.params.key, req.body);
       res.json({ success: true });
