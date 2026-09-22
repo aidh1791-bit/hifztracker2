@@ -8,7 +8,7 @@ import {
   weeklyEvaluations,
   madrasahSettings
 } from './schema.ts';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, and } from 'drizzle-orm';
 import {
   INITIAL_STUDENTS,
   INITIAL_HIFZ_RECORDS,
@@ -92,6 +92,19 @@ export async function getHifzRecords(studentId?: string) {
 
 export async function saveHifzRecord(record: typeof dailyHifzRecords.$inferInsert) {
   try {
+    const existing = await db.select().from(dailyHifzRecords).where(
+      and(
+        eq(dailyHifzRecords.studentId, record.studentId),
+        eq(dailyHifzRecords.date, record.date)
+      )
+    );
+    if (existing.length > 0) {
+      const updated = await db.update(dailyHifzRecords)
+        .set(record)
+        .where(eq(dailyHifzRecords.id, existing[0].id))
+        .returning();
+      return updated[0];
+    }
     const inserted = await db.insert(dailyHifzRecords).values(record).returning();
     return inserted[0];
   } catch (error) {
@@ -115,6 +128,19 @@ export async function getHomeLearning(studentId?: string) {
 
 export async function saveHomeLearning(record: typeof dailyHomeLearningRecords.$inferInsert) {
   try {
+    const existing = await db.select().from(dailyHomeLearningRecords).where(
+      and(
+        eq(dailyHomeLearningRecords.studentId, record.studentId),
+        eq(dailyHomeLearningRecords.date, record.date)
+      )
+    );
+    if (existing.length > 0) {
+      const updated = await db.update(dailyHomeLearningRecords)
+        .set(record)
+        .where(eq(dailyHomeLearningRecords.id, existing[0].id))
+        .returning();
+      return updated[0];
+    }
     const inserted = await db.insert(dailyHomeLearningRecords).values(record).returning();
     return inserted[0];
   } catch (error) {
@@ -138,6 +164,19 @@ export async function getTarbiyah(studentId?: string) {
 
 export async function saveTarbiyah(record: typeof dailyTarbiyahRecords.$inferInsert) {
   try {
+    const existing = await db.select().from(dailyTarbiyahRecords).where(
+      and(
+        eq(dailyTarbiyahRecords.studentId, record.studentId),
+        eq(dailyTarbiyahRecords.date, record.date)
+      )
+    );
+    if (existing.length > 0) {
+      const updated = await db.update(dailyTarbiyahRecords)
+        .set(record)
+        .where(eq(dailyTarbiyahRecords.id, existing[0].id))
+        .returning();
+      return updated[0];
+    }
     const inserted = await db.insert(dailyTarbiyahRecords).values(record).returning();
     return inserted[0];
   } catch (error) {
@@ -161,6 +200,19 @@ export async function getEvaluations(studentId?: string) {
 
 export async function saveEvaluation(evaluation: typeof weeklyEvaluations.$inferInsert) {
   try {
+    const existing = await db.select().from(weeklyEvaluations).where(
+      and(
+        eq(weeklyEvaluations.studentId, evaluation.studentId),
+        eq(weeklyEvaluations.weekCommencing, evaluation.weekCommencing)
+      )
+    );
+    if (existing.length > 0) {
+      const updated = await db.update(weeklyEvaluations)
+        .set(evaluation)
+        .where(eq(weeklyEvaluations.id, existing[0].id))
+        .returning();
+      return updated[0];
+    }
     const inserted = await db.insert(weeklyEvaluations).values(evaluation).returning();
     return inserted[0];
   } catch (error) {
@@ -198,6 +250,14 @@ export async function saveSettings(key: string, value: any) {
 // --- Auto-Seed on First Launch ---
 export async function seedInitialMadrasahDataIfEmpty() {
   try {
+    // In production, automatic demo seeding is strictly prohibited unless explicitly enabled via ALLOW_DEMO_SEED=true
+    const isProduction = process.env.NODE_ENV === 'production';
+    const allowDemoSeed = process.env.ALLOW_DEMO_SEED === 'true';
+    if (isProduction && !allowDemoSeed) {
+      console.log('[Seed] Auto-seeding disabled in production environment.');
+      return { seeded: false, count: 0, reason: 'Auto-seeding disabled in production' };
+    }
+
     const existingStudents = await db.select().from(students);
     if (existingStudents.length > 0) {
       return { seeded: false, count: existingStudents.length };

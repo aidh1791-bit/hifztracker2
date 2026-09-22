@@ -17,6 +17,7 @@ import {
 } from '../data/initialData';
 import { DEFAULT_TEACHER_SETTINGS } from '../context/HifzContext';
 import { syncQueue, QueuedMutation } from './syncQueue';
+import { authenticatedFetch } from './apiClient';
 
 export interface DataChangeRevision {
   id: string;
@@ -82,7 +83,7 @@ export const dataRepository = {
   // Cloud SQL Status check
   async checkCloudSqlStatus(): Promise<{ connected: boolean; database?: string; studentCount?: number; error?: string }> {
     try {
-      const res = await fetch('/api/database/status');
+      const res = await authenticatedFetch('/api/database/status');
       if (res.ok) {
         return await res.json();
       }
@@ -95,18 +96,21 @@ export const dataRepository = {
   // --- Students ---
   async getStudents(): Promise<Student[]> {
     try {
-      const res = await fetch('/api/students');
+      const res = await authenticatedFetch('/api/students');
       if (res.ok) {
         const cloudStudents = await res.json();
-        if (Array.isArray(cloudStudents) && cloudStudents.length > 0) {
+        if (Array.isArray(cloudStudents)) {
           safeSetItem(STORAGE_KEYS.STUDENTS, cloudStudents);
           return cloudStudents;
         }
+      } else if (res.status === 401 || res.status === 403) {
+        // Access restricted by server authorization policy; never expose demo records
+        return [];
       }
     } catch {
       // Fallback to local storage
     }
-    return safeGetItem<Student[]>(STORAGE_KEYS.STUDENTS, INITIAL_STUDENTS);
+    return safeGetItem<Student[]>(STORAGE_KEYS.STUDENTS, []);
   },
 
   async saveStudents(students: Student[]): Promise<void> {
@@ -114,7 +118,7 @@ export const dataRepository = {
     recordRevision('student', 'bulk', 'update');
     try {
       for (const std of students) {
-        await fetch('/api/students', {
+        await authenticatedFetch('/api/students', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(std)
@@ -140,7 +144,7 @@ export const dataRepository = {
 
     try {
       if (syncQueue.isNetworkOnline()) {
-        const res = await fetch('/api/students', {
+        const res = await authenticatedFetch('/api/students', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(student)
@@ -162,7 +166,7 @@ export const dataRepository = {
 
     try {
       if (syncQueue.isNetworkOnline()) {
-        const res = await fetch(`/api/students/${studentId}`, { method: 'DELETE' });
+        const res = await authenticatedFetch(`/api/students/${studentId}`, { method: 'DELETE' });
         if (!res.ok) throw new Error(`Status ${res.status}`);
       } else {
         throw new Error('Device is offline');
@@ -175,10 +179,10 @@ export const dataRepository = {
   // --- Daily Hifz Records ---
   async getAllHifzRecords(): Promise<Record<string, DailyHifzRecord[]>> {
     try {
-      const res = await fetch('/api/records/hifz');
+      const res = await authenticatedFetch('/api/records/hifz');
       if (res.ok) {
         const records = await res.json();
-        if (Array.isArray(records) && records.length > 0) {
+        if (Array.isArray(records)) {
           // Group by studentId
           const map: Record<string, DailyHifzRecord[]> = {};
           for (const r of records) {
@@ -201,11 +205,13 @@ export const dataRepository = {
           safeSetItem(STORAGE_KEYS.HIFZ_RECORDS, map);
           return map;
         }
+      } else if (res.status === 401 || res.status === 403) {
+        return {};
       }
     } catch {
       // Offline fallback
     }
-    return safeGetItem<Record<string, DailyHifzRecord[]>>(STORAGE_KEYS.HIFZ_RECORDS, INITIAL_HIFZ_RECORDS);
+    return safeGetItem<Record<string, DailyHifzRecord[]>>(STORAGE_KEYS.HIFZ_RECORDS, {});
   },
 
   async saveAllHifzRecords(recordsMap: Record<string, DailyHifzRecord[]>): Promise<void> {
@@ -238,7 +244,7 @@ export const dataRepository = {
 
     try {
       if (syncQueue.isNetworkOnline()) {
-        const res = await fetch('/api/records/hifz', {
+        const res = await authenticatedFetch('/api/records/hifz', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -282,7 +288,7 @@ export const dataRepository = {
 
     try {
       if (syncQueue.isNetworkOnline()) {
-        const res = await fetch('/api/records/home', {
+        const res = await authenticatedFetch('/api/records/home', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -328,7 +334,7 @@ export const dataRepository = {
 
     try {
       if (syncQueue.isNetworkOnline()) {
-        const res = await fetch('/api/records/tarbiyah', {
+        const res = await authenticatedFetch('/api/records/tarbiyah', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -361,20 +367,18 @@ export const dataRepository = {
   async syncEvaluation(studentId: string, evaluation: WeeklyEvaluationRecord): Promise<void> {
     const payload = {
       studentId,
-      weekStartDate: evaluation.weekCommencing,
-      weekEndDate: evaluation.weekCommencing,
-      hifzGrade: evaluation.teacherOverallFeedback || 'Satisfactory',
-      tajweedGrade: evaluation.surahMemorisation?.passed ? 'Passed' : 'Pending',
-      tarbiyahGrade: evaluation.islamicStudies?.passed ? 'Passed' : 'Pending',
-      teacherComments: evaluation.teacherOverallFeedback || '',
-      parentComments: evaluation.parentOverallFeedback || '',
-      teacherSigned: evaluation.teacherSigned,
-      parentSigned: evaluation.parentSigned
+      weekCommencing: evaluation.weekCommencing,
+      overallGrade: evaluation.teacherOverallFeedback || 'Satisfactory',
+      performanceScore: (evaluation.teacherSigned ? 50 : 0) + (evaluation.parentSigned ? 50 : 0),
+      teacherSigned: Boolean(evaluation.teacherSigned),
+      parentSigned: Boolean(evaluation.parentSigned),
+      signedDate: new Date().toISOString().split('T')[0],
+      hadithId: 1
     };
 
     try {
       if (syncQueue.isNetworkOnline()) {
-        const res = await fetch('/api/evaluations', {
+        const res = await authenticatedFetch('/api/evaluations', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -397,7 +401,7 @@ export const dataRepository = {
   // --- Settings ---
   async getAdminSettings(): Promise<AdminSettings> {
     try {
-      const res = await fetch('/api/settings/admin_settings');
+      const res = await authenticatedFetch('/api/settings/admin_settings');
       if (res.ok) {
         const cloudSettings = await res.json();
         if (cloudSettings) {
@@ -416,7 +420,7 @@ export const dataRepository = {
     recordRevision('settings', 'admin', 'update');
     try {
       if (syncQueue.isNetworkOnline()) {
-        const res = await fetch('/api/settings/admin_settings', {
+        const res = await authenticatedFetch('/api/settings/admin_settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(settings)
@@ -438,7 +442,7 @@ export const dataRepository = {
 
   async getTeacherSettings(): Promise<TeacherSettings> {
     try {
-      const res = await fetch('/api/settings/teacher_settings');
+      const res = await authenticatedFetch('/api/settings/teacher_settings');
       if (res.ok) {
         const cloudSettings = await res.json();
         if (cloudSettings) {
@@ -457,7 +461,7 @@ export const dataRepository = {
     recordRevision('settings', 'teacher', 'update');
     try {
       if (syncQueue.isNetworkOnline()) {
-        const res = await fetch('/api/settings/teacher_settings', {
+        const res = await authenticatedFetch('/api/settings/teacher_settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(settings)

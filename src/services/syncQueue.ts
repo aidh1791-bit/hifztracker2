@@ -1,3 +1,5 @@
+import { getFreshToken } from './apiClient';
+
 export interface QueuedMutation {
   id: string;
   endpoint: string;
@@ -182,6 +184,14 @@ class SyncQueueService {
     this.isSyncing = true;
     this.notify();
 
+    // Acquire fresh token at sync time. If user is signed out, pause queue to prevent syncing under anonymous/wrong credentials
+    const token = await getFreshToken();
+    if (!token) {
+      this.isSyncing = false;
+      this.notify();
+      return { synced: 0, failed: 0 };
+    }
+
     let syncedCount = 0;
     let failedCount = 0;
 
@@ -191,14 +201,9 @@ class SyncQueueService {
 
       try {
         const headers: Record<string, string> = {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         };
-
-        // Attach Firebase token if present
-        const fbToken = localStorage.getItem('madrasah_firebase_token');
-        if (fbToken) {
-          headers['Authorization'] = `Bearer ${fbToken}`;
-        }
 
         const res = await fetch(item.endpoint, {
           method: item.method,

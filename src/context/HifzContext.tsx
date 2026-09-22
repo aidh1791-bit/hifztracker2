@@ -743,39 +743,45 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return students;
     }
     if (portalMode === 'student-parent') {
-      // In student/parent mode: strictly filter to records matching the authenticated user's email/code
-      const allowed = students.filter(s => currentUser.allowedStudentIds?.includes(s.id));
-      if (allowed.length > 0) return allowed;
-      // If none explicitly matched, check parentSettings.parentContactEmail
-      const byParentEmail = students.filter(s =>
-        s.parentEmail?.toLowerCase() === parentSettings.parentContactEmail?.toLowerCase() ||
-        s.studentEmail?.toLowerCase() === parentSettings.linkedChildGoogleEmail?.toLowerCase()
-      );
-      if (byParentEmail.length > 0) return byParentEmail;
-      return students.length > 0 ? [students[0]] : [];
-    }
-    if (portalMode === 'teacher') {
-      // In teacher mode: show all students enrolled with this teacher's circle code or teacher name
-      if (currentUser.circleCode) {
-        const inCircle = students.filter(s => s.circleCode === currentUser.circleCode);
-        if (inCircle.length > 0) return inCircle;
+      // In student/parent mode: strictly filter to records matching the authenticated user's allowed IDs or verified email
+      if (Array.isArray(currentUser.allowedStudentIds) && currentUser.allowedStudentIds.length > 0) {
+        return students.filter(s => currentUser.allowedStudentIds!.includes(s.id));
       }
       if (currentUser.email) {
-        const byEmail = students.filter(s => s.teacherEmail?.toLowerCase() === currentUser.email?.toLowerCase());
-        if (byEmail.length > 0) return byEmail;
+        const userEmail = currentUser.email.toLowerCase().trim();
+        const byEmail = students.filter(s =>
+          (s.parentEmail && s.parentEmail.toLowerCase().trim() === userEmail) ||
+          (s.studentEmail && s.studentEmail.toLowerCase().trim() === userEmail)
+        );
+        return byEmail;
       }
-      return students;
+      // Zero-trust: Never fail open to students[0]
+      return [];
     }
-    return students;
-  }, [students, portalMode, currentUser, parentSettings]);
+    if (portalMode === 'teacher') {
+      // In teacher mode: show only students enrolled in this teacher's circle code or matching teacher email
+      if (Array.isArray(currentUser.allowedStudentIds) && currentUser.allowedStudentIds.length > 0) {
+        return students.filter(s => currentUser.allowedStudentIds!.includes(s.id));
+      }
+      if (currentUser.circleCode) {
+        return students.filter(s => s.circleCode.toLowerCase().trim() === currentUser.circleCode!.toLowerCase().trim());
+      }
+      if (currentUser.email) {
+        return students.filter(s => s.teacherEmail?.toLowerCase().trim() === currentUser.email!.toLowerCase().trim());
+      }
+      // Zero-trust: Never fail open to all students
+      return [];
+    }
+    return [];
+  }, [students, portalMode, currentUser]);
 
   const selectedStudent = useMemo(() => {
     const found = visibleStudents.find(s => s.id === selectedStudentId);
     if (found) return found;
     if (visibleStudents.length > 0) return visibleStudents[0];
-    return students[0] || {
+    return {
       id: 'no-student',
-      name: 'No Student Enrolled',
+      name: 'No Student Authorized',
       rollNumber: 'NONE',
       currentJuz: 1,
       currentSurah: 'None',
@@ -791,7 +797,7 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
       enrollmentCode: '',
       status: 'inactive' as const
     };
-  }, [visibleStudents, selectedStudentId, students]);
+  }, [visibleStudents, selectedStudentId]);
 
   const currentHifzRecords = useMemo(() => {
     return hifzRecordsMap[selectedStudentId] || [];

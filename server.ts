@@ -239,14 +239,16 @@ async function startServer() {
   const app = createExpressApp();
   const PORT = 3000;
 
-  // Auto-seed initial madrasah data on server boot
-  setTimeout(async () => {
-    try {
-      await seedInitialMadrasahDataIfEmpty();
-    } catch (err) {
-      console.warn('Initial seed deferred:', err);
-    }
-  }, 1000);
+  // Auto-seed initial madrasah data on server boot ONLY in dev or if explicitly enabled
+  if (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEMO_SEED === 'true') {
+    setTimeout(async () => {
+      try {
+        await seedInitialMadrasahDataIfEmpty();
+      } catch (err) {
+        console.warn('Initial seed deferred:', err);
+      }
+    }, 1000);
+  }
 
   // --- Vite Middleware & Static Serving ---
   if (process.env.NODE_ENV !== 'production') {
