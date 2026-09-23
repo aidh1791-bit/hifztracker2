@@ -189,7 +189,7 @@ interface HifzContextType {
 
   // Private Class Server & Sync
   syncStatus: SyncStatus;
-  triggerManualSync: () => void;
+  triggerManualSync: () => Promise<any> | void;
 
   // Notifications & Inquiries
   notifications: AppNotification[];
@@ -593,10 +593,7 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setFirebaseLoading(false);
       if (u) {
         try {
-          const token = await u.getIdToken();
-          localStorage.setItem('madrasah_firebase_token', token);
-          
-          // Authenticated hydration from server
+          // Authenticated hydration from server using fresh token via apiClient
           dataRepository.getStudents().then(cloudStudents => {
             if (cloudStudents && cloudStudents.length > 0) {
               setStudents(cloudStudents);
@@ -620,7 +617,14 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }).catch(() => {});
         } catch {}
       } else {
-        localStorage.removeItem('madrasah_firebase_token');
+        // Shared-device wipe on sign-out
+        setStudents([]);
+        setHifzRecordsMap({});
+        setHomeLearningMap({});
+        setTarbiyahMap({});
+        setParentTasksMap({});
+        setEvaluationsMap({});
+        setSelectedStudentId('');
       }
     });
 
@@ -748,37 +752,46 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Scoped list of students visible based on active portal and authenticated credentials
   const visibleStudents = useMemo(() => {
-    if (portalMode === 'admin') {
-      return students;
+    // Zero-trust: No students visible if user is not authenticated or unassigned
+    if (!currentUser || currentUser.role === 'unauthenticated' || currentUser.role === 'anonymous' || currentUser.role === 'unassigned') {
+      return [];
     }
+
+    if (portalMode === 'admin') {
+      return currentUser.role === 'admin' ? students : [];
+    }
+
     if (portalMode === 'student-parent') {
       // In student/parent mode: strictly filter to records matching the authenticated user's allowed IDs or verified email
+      if (currentUser.role !== 'parent' && currentUser.role !== 'admin') {
+        return [];
+      }
       if (Array.isArray(currentUser.allowedStudentIds) && currentUser.allowedStudentIds.length > 0) {
         return students.filter(s => currentUser.allowedStudentIds!.includes(s.id));
       }
       if (currentUser.email) {
         const userEmail = currentUser.email.toLowerCase().trim();
-        const byEmail = students.filter(s =>
+        return students.filter(s =>
           (s.parentEmail && s.parentEmail.toLowerCase().trim() === userEmail) ||
           (s.studentEmail && s.studentEmail.toLowerCase().trim() === userEmail)
         );
-        return byEmail;
       }
-      // Zero-trust: Never fail open to students[0]
+      // Zero-trust: Never fail open
       return [];
     }
+
     if (portalMode === 'teacher') {
-      // In teacher mode: show only students enrolled in this teacher's circle code or matching teacher email
+      // In teacher mode: show only students enrolled in this teacher's circle code
+      if (currentUser.role !== 'teacher' && currentUser.role !== 'admin') {
+        return [];
+      }
       if (Array.isArray(currentUser.allowedStudentIds) && currentUser.allowedStudentIds.length > 0) {
         return students.filter(s => currentUser.allowedStudentIds!.includes(s.id));
       }
       if (currentUser.circleCode) {
         return students.filter(s => s.circleCode.toLowerCase().trim() === currentUser.circleCode!.toLowerCase().trim());
       }
-      if (currentUser.email) {
-        return students.filter(s => s.teacherEmail?.toLowerCase().trim() === currentUser.email!.toLowerCase().trim());
-      }
-      // Zero-trust: Never fail open to all students
+      // Zero-trust: Never fail open
       return [];
     }
     return [];
@@ -1949,16 +1962,8 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setParentSettings(prev => ({ ...prev, ...updates }));
   };
 
-  const triggerManualSync = () => {
-    setSyncStatus(prev => ({ ...prev, status: 'syncing' }));
-    setTimeout(() => {
-      setSyncStatus(prev => ({
-        ...prev,
-        status: 'synced',
-        lastSyncTime: 'Just now (' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ')',
-        pendingChangesCount: 0
-      }));
-    }, 750);
+  const triggerManualSync = async () => {
+    return await syncQueue.processQueue();
   };
 
   const triggerNativePush = (title: string, body: string) => {

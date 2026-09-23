@@ -1,6 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import { adminAuth } from '../lib/firebase-admin.ts';
-import { getAllStudents, getSettings } from '../db/repository.ts';
+import {
+  getAllStudents,
+  getSettings,
+  getLinkedStudentIdsForParent,
+  linkParentToStudent
+} from '../db/repository.ts';
 
 export type UserRole = 'admin' | 'teacher' | 'parent' | 'unassigned' | 'unauthenticated' | 'anonymous';
 
@@ -18,11 +23,13 @@ export interface AuthRequest extends Request {
 /**
  * Middleware: Resolves identity exclusively via cryptographically verified Firebase ID Tokens.
  * 
- * In strict compliance with Security Rule I3:
+ * In strict compliance with Production Security Architecture:
  * - NO client-controlled headers (x-user-role, x-circle-code, x-user-email) are trusted for authority.
  * - NO unverified JWT payload decoding fallback is permitted.
- * - If token verification fails, the request is immediately rejected with 401.
- * - Anonymous users are explicitly assigned role: 'anonymous' with allowedStudentIds: [].
+ * - NO hardcoded administrator emails. Administrator authority derives from Firebase custom claims or server config.
+ * - NO studentEmail fallback for teachers. Teacher authority derives strictly from teacher registry & circle assignment.
+ * - Explicit parent UID -> student relationship binding.
+ * - Anonymous or unverified users are explicitly assigned role: 'anonymous'/'unassigned' with allowedStudentIds: [].
  */
 export const resolveAuthorisation = async (
   req: AuthRequest,
@@ -54,6 +61,7 @@ export const resolveAuthorisation = async (
     const decoded = await adminAuth.verifyIdToken(token);
     const uid = decoded.uid;
     const email = (decoded.email || '').toLowerCase().trim();
+    const isEmailVerified = Boolean(decoded.email_verified);
 
     // Check for Firebase anonymous authentication provider
     if (!email || decoded.firebase?.sign_in_provider === 'anonymous') {
@@ -70,14 +78,12 @@ export const resolveAuthorisation = async (
     const allStudents = await getAllStudents();
 
     // 3. Admin Authority Check:
-    // Only verified Firebase custom claim `admin: true` or verified email matching authorized administrator list
-    const adminEmails = [
-      (process.env.ADMIN_EMAIL || '').toLowerCase().trim(),
-      'aidh1791@gmail.com',
-      'admin@hifztrack.org'
-    ].filter(Boolean);
-
-    const isAdmin = Boolean(decoded.admin === true) || (email !== '' && adminEmails.includes(email));
+    // Derives from Firebase Admin Custom Claim (decoded.admin === true or decoded.role === 'admin')
+    // or the server-configured ADMIN_EMAIL environment variable (requires verified email).
+    const serverConfiguredAdminEmail = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
+    const isAdmin = Boolean(decoded.admin === true) ||
+      Boolean(decoded.role === 'admin') ||
+      (isEmailVerified && serverConfiguredAdminEmail !== '' && email === serverConfiguredAdminEmail);
 
     if (isAdmin) {
       req.user = {
@@ -89,47 +95,66 @@ export const resolveAuthorisation = async (
       return next();
     }
 
-    // 4. Parent Authority Check:
-    // Derive allowed students strictly from verified email matching student parent records in database
-    const matchingParentStudents = email !== ''
-      ? allStudents.filter(s => s.parentEmail && s.parentEmail.toLowerCase().trim() === email)
-      : [];
-
-    if (matchingParentStudents.length > 0) {
-      req.user = {
-        uid,
-        email,
-        role: 'parent',
-        allowedStudentIds: matchingParentStudents.map(s => s.id)
-      };
-      return next();
+    // 4. Teacher Authority Check:
+    // Strictly requires teacher registration and assigned Halqa circle.
+    // A studentEmail NEVER establishes teacher authority.
+    // If derived from email lookup in teacher roster, email MUST be verified (isEmailVerified === true).
+    let teacherCircleCode: string | null = null;
+    if (decoded.role === 'teacher' && typeof decoded.circleCode === 'string') {
+      teacherCircleCode = decoded.circleCode;
+    } else if (isEmailVerified) {
+      try {
+        const adminSettings: any = await getSettings('admin_settings') || await getSettings('admin');
+        if (adminSettings && Array.isArray(adminSettings.teachers)) {
+          const found = adminSettings.teachers.find(
+            (t: any) => t.email && t.email.toLowerCase().trim() === email
+          );
+          if (found && found.circleCode) {
+            teacherCircleCode = found.circleCode;
+          }
+        }
+      } catch {}
     }
 
-    // 5. Teacher Authority Check:
-    // Look up teacher in database settings
-    let teacherCircleCode: string | null = null;
-    try {
-      const adminSettings: any = await getSettings('admin');
-      if (adminSettings && Array.isArray(adminSettings.teachers)) {
-        const found = adminSettings.teachers.find(
-          (t: any) => t.email && t.email.toLowerCase().trim() === email
-        );
-        if (found) {
-          teacherCircleCode = found.circleCode;
-        }
-      }
-    } catch {}
-
-    const matchingTeacherStudents = teacherCircleCode
-      ? allStudents.filter(s => s.circleCode.toLowerCase().trim() === teacherCircleCode!.toLowerCase().trim())
-      : allStudents.filter(s => s.studentEmail && s.studentEmail.toLowerCase().trim() === email);
-
-    if (matchingTeacherStudents.length > 0 || teacherCircleCode !== null) {
+    if (teacherCircleCode !== null) {
+      const matchingTeacherStudents = allStudents.filter(
+        s => s.circleCode.toLowerCase().trim() === teacherCircleCode!.toLowerCase().trim()
+      );
       req.user = {
         uid,
         email,
         role: 'teacher',
         allowedStudentIds: matchingTeacherStudents.map(s => s.id)
+      };
+      return next();
+    }
+
+    // 5. Parent Authority Check:
+    // Server-Authoritative UID -> Student relationship.
+    // First, query explicit parent_student_links for this UID.
+    let linkedStudentIds = await getLinkedStudentIdsForParent(uid);
+
+    // If no existing links for this UID, check if verified email matches student parentEmail
+    // and establish the durable server-side link.
+    // STRICT REQUIREMENT: Only verified emails (isEmailVerified === true) may establish parent-student links!
+    if (linkedStudentIds.length === 0 && email !== '' && isEmailVerified) {
+      const matchingParentStudents = allStudents.filter(
+        s => s.parentEmail && s.parentEmail.toLowerCase().trim() === email
+      );
+      if (matchingParentStudents.length > 0) {
+        for (const st of matchingParentStudents) {
+          await linkParentToStudent(uid, st.id);
+        }
+        linkedStudentIds = matchingParentStudents.map(s => s.id);
+      }
+    }
+
+    if (linkedStudentIds.length > 0) {
+      req.user = {
+        uid,
+        email,
+        role: 'parent',
+        allowedStudentIds: linkedStudentIds
       };
       return next();
     }

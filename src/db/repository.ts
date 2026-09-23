@@ -6,7 +6,9 @@ import {
   dailyHomeLearningRecords,
   dailyTarbiyahRecords,
   weeklyEvaluations,
-  madrasahSettings
+  madrasahSettings,
+  processedOperations,
+  parentStudentLinks
 } from './schema.ts';
 import { eq, desc, and } from 'drizzle-orm';
 import {
@@ -18,6 +20,77 @@ import {
   DEFAULT_ADMIN_SETTINGS
 } from '../data/initialData.ts';
 import { DEFAULT_TEACHER_SETTINGS } from '../context/HifzContext.tsx';
+
+// In-memory fallback sets for local execution or environments where DDL hasn't migrated yet
+const inMemoryProcessedOps = new Set<string>();
+const inMemoryParentLinks = new Map<string, Set<string>>();
+
+// --- Processed Operations (Idempotency) ---
+export async function isOperationProcessed(operationId: string): Promise<boolean> {
+  if (!operationId) return false;
+  if (inMemoryProcessedOps.has(operationId)) return true;
+  try {
+    const existing = await db.select().from(processedOperations).where(eq(processedOperations.operationId, operationId));
+    if (existing.length > 0) {
+      inMemoryProcessedOps.add(operationId);
+      return true;
+    }
+  } catch (err) {
+    // Table might be in provisioning; check in-memory cache
+    return inMemoryProcessedOps.has(operationId);
+  }
+  return false;
+}
+
+export async function recordProcessedOperation(
+  operationId: string,
+  uid: string,
+  endpoint: string,
+  clientTimestamp?: string
+): Promise<void> {
+  if (!operationId) return;
+  inMemoryProcessedOps.add(operationId);
+  try {
+    await db.insert(processedOperations).values({
+      operationId,
+      uid,
+      endpoint,
+      status: 'completed',
+      clientTimestamp: clientTimestamp || new Date().toISOString()
+    }).onConflictDoNothing();
+  } catch (err) {
+    // Non-fatal if table not migrated or duplicate
+  }
+}
+
+// --- Parent-Student Links (Server-Authoritative Parent Mapping) ---
+export async function getLinkedStudentIdsForParent(parentUid: string): Promise<string[]> {
+  const memSet = inMemoryParentLinks.get(parentUid) || new Set<string>();
+  try {
+    const links = await db.select().from(parentStudentLinks).where(eq(parentStudentLinks.parentUid, parentUid));
+    for (const l of links) {
+      memSet.add(l.studentId);
+    }
+    return Array.from(memSet);
+  } catch (err) {
+    return Array.from(memSet);
+  }
+}
+
+export async function linkParentToStudent(parentUid: string, studentId: string): Promise<void> {
+  if (!inMemoryParentLinks.has(parentUid)) {
+    inMemoryParentLinks.set(parentUid, new Set<string>());
+  }
+  inMemoryParentLinks.get(parentUid)!.add(studentId);
+  try {
+    await db.insert(parentStudentLinks).values({
+      parentUid,
+      studentId
+    }).onConflictDoNothing();
+  } catch (err) {
+    // Stored in inMemoryParentLinks as durable process fallback
+  }
+}
 
 // --- Users ---
 export async function getOrCreateUser(uid: string, email: string, displayName?: string, role: string = 'parent') {
@@ -65,6 +138,46 @@ export async function upsertStudent(studentData: typeof students.$inferInsert) {
   } catch (error) {
     console.error('Error upserting student:', error);
     throw new Error('Failed to save student record.', { cause: error });
+  }
+}
+
+export async function getStudentById(studentId: string) {
+  try {
+    const rows = await db.select().from(students).where(eq(students.id, studentId));
+    return rows[0] || null;
+  } catch (error) {
+    console.error('Error fetching student by id:', error);
+    throw new Error('Failed to retrieve student record.', { cause: error });
+  }
+}
+
+export async function getGdprSarExport(studentId: string) {
+  try {
+    const student = await getStudentById(studentId);
+    if (!student) return null;
+    const [hifz, home, tarbiyah, evals] = await Promise.all([
+      getHifzRecords(studentId),
+      getHomeLearning(studentId),
+      getTarbiyah(studentId),
+      getEvaluations(studentId)
+    ]);
+    return {
+      gdpr_article_15_subject_access_request: {
+        student_id: student.id,
+        export_timestamp: new Date().toISOString(),
+        governing_framework: 'UK General Data Protection Regulation (UK GDPR) & Data Protection Act 2018',
+        ico_childrens_code_aligned: true,
+        legal_basis: 'Article 6(1)(b) Contract / Educational Delivery & Article 9(2)(d) Not-for-profit Religious Body',
+        student_profile: student,
+        daily_hifz_recitations: hifz,
+        home_learning_records: home,
+        daily_tarbiyah_records: tarbiyah,
+        weekly_evaluations: evals
+      }
+    };
+  } catch (error) {
+    console.error('Error compiling GDPR SAR export:', error);
+    throw new Error('Failed to generate GDPR Subject Access Request export.', { cause: error });
   }
 }
 

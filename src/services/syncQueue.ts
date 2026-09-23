@@ -1,13 +1,18 @@
+import { auth } from '../lib/firebase';
 import { getFreshToken, authenticatedFetch } from './apiClient';
 
 export interface QueuedMutation {
   id: string;
+  operationId: string;
+  userId: string;
   endpoint: string;
   method: 'POST' | 'PUT' | 'DELETE';
   payload: any;
   entityType: 'hifz_record' | 'attendance' | 'student' | 'tarbiyah' | 'home_learning' | 'evaluation' | 'settings';
   description: string;
   createdAt: string;
+  clientTimestamp: string;
+  clientRevision: number;
   attempts: number;
   lastError?: string;
   status: 'pending' | 'syncing' | 'failed' | 'synced';
@@ -145,14 +150,22 @@ class SyncQueueService {
     entityType: QueuedMutation['entityType'],
     description: string
   ): QueuedMutation {
+    const opId = `op-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const nowIso = new Date().toISOString();
+    const currentUid = auth.currentUser?.uid || 'offline-session';
+
     const item: QueuedMutation = {
-      id: `sync-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+      id: opId,
+      operationId: opId,
+      userId: currentUid,
       endpoint,
       method,
       payload,
       entityType,
       description,
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
+      clientTimestamp: nowIso,
+      clientRevision: 1,
       attempts: 0,
       status: 'pending'
     };
@@ -170,6 +183,9 @@ class SyncQueueService {
 
   /**
    * Drain and execute all pending mutations against the backend Cloud SQL API.
+   * Enforces:
+   * - Operation-level idempotency headers (`x-operation-id`, `x-client-timestamp`)
+   * - User-isolation: mutations are NEVER uploaded under a mismatched authenticated user
    */
   public async processQueue(): Promise<{ synced: number; failed: number }> {
     if (this.isSyncing) {
@@ -186,7 +202,9 @@ class SyncQueueService {
 
     // Acquire fresh token at sync time. If user is signed out, pause queue to prevent syncing under anonymous/wrong credentials
     const token = await getFreshToken();
-    if (!token) {
+    const currentUid = auth.currentUser?.uid;
+
+    if (!token || !currentUid) {
       this.isSyncing = false;
       this.notify();
       return { synced: 0, failed: 0 };
@@ -196,14 +214,31 @@ class SyncQueueService {
     let failedCount = 0;
 
     for (const item of pending) {
+      // User Isolation Guard (Requirement D.18 & D.19):
+      // If the mutation was originated by a specific UID that does not match the active session,
+      // hold it in queue to prevent uploading child data under another user's identity.
+      if (item.userId && item.userId !== 'offline-session' && item.userId !== currentUid) {
+        continue;
+      }
+
       item.status = 'syncing';
       this.notify();
 
       try {
+        const opId = item.operationId || item.id;
         const res = await authenticatedFetch(item.endpoint, {
           method: item.method,
-          headers: { 'Content-Type': 'application/json' },
-          body: item.payload ? JSON.stringify(item.payload) : undefined
+          headers: {
+            'Content-Type': 'application/json',
+            'x-operation-id': opId,
+            'x-client-timestamp': item.clientTimestamp || item.createdAt,
+            'x-client-revision': String(item.attempts + 1)
+          },
+          body: item.payload ? JSON.stringify({
+            ...item.payload,
+            operationId: opId,
+            clientTimestamp: item.clientTimestamp || item.createdAt
+          }) : undefined
         });
 
         if (res.ok) {

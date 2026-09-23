@@ -117,6 +117,27 @@ export const weeklyEvaluations = pgTable('weekly_evaluations', {
   unique('weekly_evaluations_student_id_week_commencing_unique').on(table.studentId, table.weekCommencing)
 ]);
 
+export const processedOperations = pgTable('processed_operations', {
+  id: serial('id').primaryKey(),
+  operationId: text('operation_id').notNull().unique(),
+  uid: text('uid').notNull(),
+  endpoint: text('endpoint').notNull(),
+  status: text('status').notNull().default('completed'),
+  clientTimestamp: text('client_timestamp'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const parentStudentLinks = pgTable('parent_student_links', {
+  id: serial('id').primaryKey(),
+  parentUid: text('parent_uid').notNull(),
+  studentId: text('student_id')
+    .notNull()
+    .references(() => students.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at').defaultNow(),
+}, (table) => [
+  unique('parent_student_links_parent_student_unique').on(table.parentUid, table.studentId)
+]);
+
 export const madrasahSettings = pgTable('madrasah_settings', {
   id: serial('id').primaryKey(),
   key: text('key').notNull().unique(),

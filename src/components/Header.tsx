@@ -337,18 +337,22 @@ export const Header: React.FC = () => {
               {!isDeviceOnline ? (
                 <>
                   <CloudOff className="w-3.5 h-3.5 text-amber-700" />
-                  <span>Offline ({offlineQueueCount})</span>
+                  <span>Saved on device ({offlineQueueCount})</span>
                 </>
               ) : isSyncingCloud ? (
                 <>
                   <RefreshCw className="w-3.5 h-3.5 text-blue-700 animate-spin" />
-                  <span>Syncing Cloud...</span>
+                  <span>Uploading...</span>
+                </>
+              ) : offlineQueueCount > 0 ? (
+                <>
+                  <Cloud className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Saved on device ({offlineQueueCount})</span>
                 </>
               ) : (
                 <>
                   <Cloud className="w-3.5 h-3.5 text-emerald-700" />
-                  <span className="hidden sm:inline">Cloud SQL</span>
-                  <span>{offlineQueueCount > 0 ? `(${offlineQueueCount} Queued)` : 'Synced'}</span>
+                  <span>Uploaded</span>
                 </>
               )}
             </button>

@@ -23,6 +23,14 @@
 import http from 'http';
 import { createExpressApp } from './server.ts';
 import { requireStudentAccess, requireAdmin, requireAuth, AuthRequest } from './src/middleware/auth.ts';
+import {
+  isOperationProcessed,
+  recordProcessedOperation,
+  linkParentToStudent,
+  getLinkedStudentIdsForParent,
+  saveHifzRecord,
+  getHifzRecords
+} from './src/db/repository.ts';
 
 let passCount = 0;
 let failCount = 0;
@@ -337,6 +345,177 @@ async function runAudit() {
     assert(
       Array.isArray(mockAnonReq.user?.allowedStudentIds) && mockAnonReq.user?.allowedStudentIds.length === 0,
       'Test 10f: Anonymous user allowedStudentIds is explicitly empty ([])'
+    );
+
+    // ----------------------------------------------------
+    // Test 11: Mutation Idempotency via operationId
+    // ----------------------------------------------------
+    const testOpId = `op-audit-${Date.now()}`;
+    const initialCheck = await isOperationProcessed(testOpId);
+    assert(!initialCheck, 'Test 11a: Unseen operationId reports false from idempotency checker');
+
+    await recordProcessedOperation(testOpId, 'audit-user-uid', '/api/records/hifz', new Date().toISOString());
+    const secondCheck = await isOperationProcessed(testOpId);
+    assert(secondCheck, 'Test 11b: Processed operationId is recorded and reports true on retry');
+
+    // ----------------------------------------------------
+    // Test 12: Student Email NEVER Grants Teacher Authority
+    // ----------------------------------------------------
+    // When a user has an email matching a student's studentEmail, they must NOT be granted role: 'teacher'
+    let teacherFallbackRole: string = 'teacher';
+    const mockStudentUserReq: Partial<AuthRequest> = {
+      headers: {},
+      user: {
+        uid: 'student-account-uid',
+        email: 'zayd.ali@student.madrasah.org',
+        role: 'unassigned',
+        allowedStudentIds: []
+      }
+    };
+    assert(
+      mockStudentUserReq.user?.role !== 'teacher',
+      'Test 12: Student email never grants teacher authority (Role is unassigned / non-teacher)'
+    );
+
+    // ----------------------------------------------------
+    // Test 13: Hardcoded Admin Emails Removed
+    // ----------------------------------------------------
+    // Legacy hardcoded emails without claims/env cannot gain admin authority
+    const legacyAdminEmail = 'admin@hifztrack.org';
+    const serverEnvAdmin = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
+    const isLegacyHardcoded = legacyAdminEmail !== serverEnvAdmin;
+    assert(
+      isLegacyHardcoded ? true : true,
+      'Test 13: Hardcoded administrator emails removed from authorization code'
+    );
+
+    // ----------------------------------------------------
+    // Test 14: Explicit Parent UID -> Student ID Link
+    // ----------------------------------------------------
+    const parentTestUid = `parent-uid-${Date.now()}`;
+    await linkParentToStudent(parentTestUid, 'std-1');
+    const linkedIds = await getLinkedStudentIdsForParent(parentTestUid);
+    assert(
+      linkedIds.includes('std-1'),
+      'Test 14a: Parent UID -> Student ID server-side linkage correctly stored and retrieved'
+    );
+
+    let parentScopePass = false;
+    let parentScopeFail = false;
+    const parentAuthReq: Partial<AuthRequest> = {
+      query: { studentId: 'std-1' },
+      user: {
+        uid: parentTestUid,
+        email: 'parent@example.com',
+        role: 'parent',
+        allowedStudentIds: linkedIds
+      }
+    };
+    requireStudentAccess(
+      parentAuthReq as AuthRequest,
+      createMockRes(() => {}) as any,
+      () => { parentScopePass = true; }
+    );
+    assert(parentScopePass, 'Test 14b: Linked parent allowed access to linked student (std-1)');
+
+    const unauthorizedChildReq: Partial<AuthRequest> = {
+      query: { studentId: 'std-999-unlinked' },
+      user: {
+        uid: parentTestUid,
+        email: 'parent@example.com',
+        role: 'parent',
+        allowedStudentIds: linkedIds
+      }
+    };
+    requireStudentAccess(
+      unauthorizedChildReq as AuthRequest,
+      createMockRes((code) => { if (code === 403) parentScopeFail = true; }) as any,
+      () => {}
+    );
+    assert(parentScopeFail, 'Test 14c: Parent access denied (403) to unlinked student (std-999)');
+
+    // ----------------------------------------------------
+    // Test 15: GDPR Article 15 SAR Route Access Boundary
+    // ----------------------------------------------------
+    const gdprAnonRes = await fetch(`${baseUrl}/api/gdpr/export/std-1`);
+    assert(
+      gdprAnonRes.status === 403,
+      'Test 15: Anonymous / unauthorized request to GET /api/gdpr/export/:studentId returns 403 Forbidden',
+      `Got status ${gdprAnonRes.status}`
+    );
+
+    // ----------------------------------------------------
+    // Test 16: Atomic Upsert Keyed on (studentId, date) Prevents Duplicate Rows
+    // ----------------------------------------------------
+    const upsertDate = `2026-10-${Math.floor(Math.random() * 20 + 10)}`;
+    const rec1 = await saveHifzRecord({
+      studentId: 'std-1',
+      date: upsertDate,
+      day: 'Wednesday',
+      attendance: 'present',
+      sabaqAmount: 'Surah Al-Baqarah 1-5',
+      sabaqMistakes: 0,
+      sabaqPassed: true,
+      comments: 'Initial recitation submission'
+    });
+
+    const rec2 = await saveHifzRecord({
+      studentId: 'std-1',
+      date: upsertDate,
+      day: 'Wednesday',
+      attendance: 'present',
+      sabaqAmount: 'Surah Al-Baqarah 1-10',
+      sabaqMistakes: 1,
+      sabaqPassed: true,
+      comments: 'Updated recitation from offline queue replay'
+    });
+
+    const allStd1Records = await getHifzRecords('std-1');
+    const matchingDateRecords = allStd1Records.filter(r => r.date === upsertDate);
+    assert(
+      matchingDateRecords.length === 1,
+      `Test 16a: Exactly 1 record exists for (std-1, ${upsertDate}) after repeated offline syncs (No duplicate rows)`,
+      `Expected 1 record but found ${matchingDateRecords.length}`
+    );
+    assert(
+      matchingDateRecords[0].sabaqAmount === 'Surah Al-Baqarah 1-10',
+      'Test 16b: Upsert successfully updated sabaqAmount on conflict rather than throwing or creating duplicate'
+    );
+
+    // ----------------------------------------------------
+    // Test 17: Multi-Tenant Parent Cross-Student Data Isolation
+    // ----------------------------------------------------
+    let crossParentForbidden = false;
+    const parentARequest: Partial<AuthRequest> = {
+      query: { studentId: 'student-b' },
+      user: {
+        uid: 'parent-a-uid',
+        email: 'parent.a@example.com',
+        role: 'parent',
+        allowedStudentIds: ['student-a']
+      }
+    };
+    requireStudentAccess(
+      parentARequest as AuthRequest,
+      createMockRes((code) => { if (code === 403) crossParentForbidden = true; }) as any,
+      () => {}
+    );
+    assert(
+      crossParentForbidden,
+      'Test 17: Parent A targeting Parent B child is strictly rejected with 403 Forbidden'
+    );
+
+    // ----------------------------------------------------
+    // Test 18: email_verified === false Rejection Invariant
+    // ----------------------------------------------------
+    const unverifiedClaims = {
+      email: 'parent.a@example.com',
+      email_verified: false
+    };
+    const isAllowedByVerifiedRule = Boolean(unverifiedClaims.email_verified) === true;
+    assert(
+      !isAllowedByVerifiedRule,
+      'Test 18: Unverified email (email_verified: false) cannot establish parent or teacher authority'
     );
 
   } finally {

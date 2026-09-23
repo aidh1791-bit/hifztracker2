@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Response, NextFunction } from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import {
@@ -15,7 +15,10 @@ import {
   saveEvaluation,
   getSettings,
   saveSettings,
-  seedInitialMadrasahDataIfEmpty
+  seedInitialMadrasahDataIfEmpty,
+  isOperationProcessed,
+  recordProcessedOperation,
+  getGdprSarExport
 } from './src/db/repository.ts';
 import {
   resolveAuthorisation,
@@ -28,6 +31,35 @@ import {
 export function createExpressApp() {
   const app = express();
   app.use(express.json());
+
+  // Idempotency Middleware: Intercept duplicate offline re-deliveries
+  const checkIdempotency = async (req: AuthRequest, res: Response, next: NextFunction) => {
+    const operationId = (req.headers['x-operation-id'] as string) || req.body?.operationId;
+    if (operationId) {
+      const alreadyProcessed = await isOperationProcessed(operationId);
+      if (alreadyProcessed) {
+        return res.status(200).json({
+          success: true,
+          idempotent: true,
+          operationId,
+          message: 'Operation already processed'
+        });
+      }
+    }
+    next();
+  };
+
+  const markOperationComplete = async (req: AuthRequest) => {
+    const operationId = (req.headers['x-operation-id'] as string) || req.body?.operationId;
+    if (operationId) {
+      await recordProcessedOperation(
+        operationId,
+        req.user?.uid || 'unknown',
+        req.originalUrl || req.path,
+        (req.headers['x-client-timestamp'] as string) || req.body?.clientTimestamp
+      );
+    }
+  };
 
   // --- API Routes (Defined FIRST) ---
 
@@ -86,9 +118,10 @@ export function createExpressApp() {
   });
 
   // Student mutations (Strict Admin Only)
-  app.post('/api/students', requireAdmin as any, async (req: AuthRequest, res) => {
+  app.post('/api/students', requireAdmin as any, checkIdempotency as any, async (req: AuthRequest, res) => {
     try {
       const saved = await upsertStudent(req.body);
+      await markOperationComplete(req);
       res.json(saved);
     } catch (error: any) {
       console.error('Failed to save student:', error);
@@ -96,13 +129,29 @@ export function createExpressApp() {
     }
   });
 
-  app.delete('/api/students/:id', requireAdmin as any, async (req: AuthRequest, res) => {
+  app.delete('/api/students/:id', requireAdmin as any, checkIdempotency as any, async (req: AuthRequest, res) => {
     try {
       await deleteStudentById(req.params.id);
+      await markOperationComplete(req);
       res.json({ success: true, deletedId: req.params.id });
     } catch (error: any) {
       console.error('Failed to delete student:', error);
       res.status(500).json({ error: error.message || 'Error deleting student' });
+    }
+  });
+
+  // GDPR Article 15: Machine-readable Subject Access Request Export
+  app.get('/api/gdpr/export/:studentId', requireStudentAccess as any, async (req: AuthRequest, res) => {
+    try {
+      const studentId = req.params.studentId;
+      const exportData = await getGdprSarExport(studentId);
+      if (!exportData) {
+        return res.status(404).json({ error: 'Student not found for GDPR export' });
+      }
+      res.json(exportData);
+    } catch (error: any) {
+      console.error('Failed to generate GDPR export:', error);
+      res.status(500).json({ error: error.message || 'Error compiling GDPR export' });
     }
   });
 
@@ -123,9 +172,10 @@ export function createExpressApp() {
     }
   });
 
-  app.post('/api/records/hifz', requireStudentAccess as any, async (req: AuthRequest, res) => {
+  app.post('/api/records/hifz', requireStudentAccess as any, checkIdempotency as any, async (req: AuthRequest, res) => {
     try {
       const record = await saveHifzRecord(req.body);
+      await markOperationComplete(req);
       res.json(record);
     } catch (error: any) {
       console.error('Failed to save hifz record:', error);
@@ -149,9 +199,10 @@ export function createExpressApp() {
     }
   });
 
-  app.post('/api/records/home', requireStudentAccess as any, async (req: AuthRequest, res) => {
+  app.post('/api/records/home', requireStudentAccess as any, checkIdempotency as any, async (req: AuthRequest, res) => {
     try {
       const record = await saveHomeLearning(req.body);
+      await markOperationComplete(req);
       res.json(record);
     } catch (error: any) {
       console.error('Failed to save home learning:', error);
@@ -175,9 +226,10 @@ export function createExpressApp() {
     }
   });
 
-  app.post('/api/records/tarbiyah', requireStudentAccess as any, async (req: AuthRequest, res) => {
+  app.post('/api/records/tarbiyah', requireStudentAccess as any, checkIdempotency as any, async (req: AuthRequest, res) => {
     try {
       const record = await saveTarbiyah(req.body);
+      await markOperationComplete(req);
       res.json(record);
     } catch (error: any) {
       console.error('Failed to save tarbiyah:', error);
@@ -201,9 +253,10 @@ export function createExpressApp() {
     }
   });
 
-  app.post('/api/evaluations', requireStudentAccess as any, async (req: AuthRequest, res) => {
+  app.post('/api/evaluations', requireStudentAccess as any, checkIdempotency as any, async (req: AuthRequest, res) => {
     try {
       const saved = await saveEvaluation(req.body);
+      await markOperationComplete(req);
       res.json(saved);
     } catch (error: any) {
       console.error('Failed to save evaluation:', error);
@@ -222,9 +275,10 @@ export function createExpressApp() {
     }
   });
 
-  app.post('/api/settings/:key', requireAdmin as any, async (req: AuthRequest, res) => {
+  app.post('/api/settings/:key', requireAdmin as any, checkIdempotency as any, async (req: AuthRequest, res) => {
     try {
       await saveSettings(req.params.key, req.body);
+      await markOperationComplete(req);
       res.json({ success: true });
     } catch (error: any) {
       console.error('Failed to save settings:', error);
