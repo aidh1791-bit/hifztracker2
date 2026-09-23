@@ -172,6 +172,54 @@ async function runAudit() {
     );
 
     // ----------------------------------------------------
+    // Test 9b: Unauthenticated Mutations on Home, Tarbiyah, Evaluations (Default-Deny 403)
+    // ----------------------------------------------------
+    const resHome = await fetch(`${baseUrl}/api/records/home`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentId: 'std-1', date: '2026-09-23' })
+    });
+    assert(
+      resHome.status === 403,
+      'Test 9b(1): Unauthenticated POST /api/records/home rejected with 403 Forbidden by default-deny',
+      `Got status ${resHome.status}`
+    );
+
+    const resTarbiyah = await fetch(`${baseUrl}/api/records/tarbiyah`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentId: 'std-1', date: '2026-09-23' })
+    });
+    assert(
+      resTarbiyah.status === 403,
+      'Test 9b(2): Unauthenticated POST /api/records/tarbiyah rejected with 403 Forbidden by default-deny',
+      `Got status ${resTarbiyah.status}`
+    );
+
+    const resEval = await fetch(`${baseUrl}/api/evaluations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentId: 'std-1', weekCommencing: '2026-09-23' })
+    });
+    assert(
+      resEval.status === 403,
+      'Test 9b(3): Unauthenticated POST /api/evaluations rejected with 403 Forbidden by default-deny',
+      `Got status ${resEval.status}`
+    );
+
+    // ----------------------------------------------------
+    // Test 9c: Malformed Non-JWT Bearer Token
+    // ----------------------------------------------------
+    const resMalformed = await fetch(`${baseUrl}/api/records/hifz?studentId=std-1`, {
+      headers: { Authorization: 'Bearer random_garbage_string_not_a_jwt' }
+    });
+    assert(
+      resMalformed.status === 401,
+      'Test 9c: Malformed non-JWT token rejected with 401 by Firebase Admin verification',
+      `Got status ${resMalformed.status}`
+    );
+
+    // ----------------------------------------------------
     // Test 10: Server-Side Cross-Role Boundary Unit Tests
     // ----------------------------------------------------
     console.log('\n  --- Role Scoping & Isolation Invariants ---');

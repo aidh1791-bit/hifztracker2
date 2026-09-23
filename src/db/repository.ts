@@ -92,21 +92,30 @@ export async function getHifzRecords(studentId?: string) {
 
 export async function saveHifzRecord(record: typeof dailyHifzRecords.$inferInsert) {
   try {
-    const existing = await db.select().from(dailyHifzRecords).where(
-      and(
-        eq(dailyHifzRecords.studentId, record.studentId),
-        eq(dailyHifzRecords.date, record.date)
-      )
-    );
-    if (existing.length > 0) {
-      const updated = await db.update(dailyHifzRecords)
-        .set(record)
-        .where(eq(dailyHifzRecords.id, existing[0].id))
-        .returning();
-      return updated[0];
-    }
-    const inserted = await db.insert(dailyHifzRecords).values(record).returning();
-    return inserted[0];
+    const upserted = await db.insert(dailyHifzRecords)
+      .values(record)
+      .onConflictDoUpdate({
+        target: [dailyHifzRecords.studentId, dailyHifzRecords.date],
+        set: {
+          day: record.day,
+          attendance: record.attendance,
+          sabaqAmount: record.sabaqAmount,
+          sabaqMistakes: record.sabaqMistakes,
+          sabaqPassed: record.sabaqPassed,
+          sabaqParaAmount: record.sabaqParaAmount,
+          sabaqParaMistakes: record.sabaqParaMistakes,
+          sabaqParaPassed: record.sabaqParaPassed,
+          dawr1Amount: record.dawr1Amount,
+          dawr1Mistakes: record.dawr1Mistakes,
+          dawr1Passed: record.dawr1Passed,
+          dawr2Amount: record.dawr2Amount,
+          dawr2Mistakes: record.dawr2Mistakes,
+          dawr2Passed: record.dawr2Passed,
+          comments: record.comments,
+        }
+      })
+      .returning();
+    return upserted[0];
   } catch (error) {
     console.error('Error saving hifz record:', error);
     throw new Error('Failed to record daily recitation.', { cause: error });
@@ -128,21 +137,22 @@ export async function getHomeLearning(studentId?: string) {
 
 export async function saveHomeLearning(record: typeof dailyHomeLearningRecords.$inferInsert) {
   try {
-    const existing = await db.select().from(dailyHomeLearningRecords).where(
-      and(
-        eq(dailyHomeLearningRecords.studentId, record.studentId),
-        eq(dailyHomeLearningRecords.date, record.date)
-      )
-    );
-    if (existing.length > 0) {
-      const updated = await db.update(dailyHomeLearningRecords)
-        .set(record)
-        .where(eq(dailyHomeLearningRecords.id, existing[0].id))
-        .returning();
-      return updated[0];
-    }
-    const inserted = await db.insert(dailyHomeLearningRecords).values(record).returning();
-    return inserted[0];
+    const upserted = await db.insert(dailyHomeLearningRecords)
+      .values(record)
+      .onConflictDoUpdate({
+        target: [dailyHomeLearningRecords.studentId, dailyHomeLearningRecords.date],
+        set: {
+          day: record.day,
+          sabaqMins: record.sabaqMins,
+          sabaqParaMins: record.sabaqParaMins,
+          dawr1Mins: record.dawr1Mins,
+          dawr2Mins: record.dawr2Mins,
+          parentSigned: record.parentSigned,
+          parentComments: record.parentComments,
+        }
+      })
+      .returning();
+    return upserted[0];
   } catch (error) {
     console.error('Error saving home learning record:', error);
     throw new Error('Failed to record home practice.', { cause: error });
@@ -164,21 +174,26 @@ export async function getTarbiyah(studentId?: string) {
 
 export async function saveTarbiyah(record: typeof dailyTarbiyahRecords.$inferInsert) {
   try {
-    const existing = await db.select().from(dailyTarbiyahRecords).where(
-      and(
-        eq(dailyTarbiyahRecords.studentId, record.studentId),
-        eq(dailyTarbiyahRecords.date, record.date)
-      )
-    );
-    if (existing.length > 0) {
-      const updated = await db.update(dailyTarbiyahRecords)
-        .set(record)
-        .where(eq(dailyTarbiyahRecords.id, existing[0].id))
-        .returning();
-      return updated[0];
-    }
-    const inserted = await db.insert(dailyTarbiyahRecords).values(record).returning();
-    return inserted[0];
+    const upserted = await db.insert(dailyTarbiyahRecords)
+      .values(record)
+      .onConflictDoUpdate({
+        target: [dailyTarbiyahRecords.studentId, dailyTarbiyahRecords.date],
+        set: {
+          day: record.day,
+          fajr: record.fajr,
+          dhuhr: record.dhuhr,
+          asr: record.asr,
+          maghrib: record.maghrib,
+          ishaa: record.ishaa,
+          dailySadaqah: record.dailySadaqah,
+          eesaalThawaab: record.eesaalThawaab,
+          dailyDuasDhikr: record.dailyDuasDhikr,
+          dailyQuranWird: record.dailyQuranWird,
+          parentSignature: record.parentSignature,
+        }
+      })
+      .returning();
+    return upserted[0];
   } catch (error) {
     console.error('Error saving tarbiyah record:', error);
     throw new Error('Failed to record tarbiyah log.', { cause: error });
@@ -200,21 +215,21 @@ export async function getEvaluations(studentId?: string) {
 
 export async function saveEvaluation(evaluation: typeof weeklyEvaluations.$inferInsert) {
   try {
-    const existing = await db.select().from(weeklyEvaluations).where(
-      and(
-        eq(weeklyEvaluations.studentId, evaluation.studentId),
-        eq(weeklyEvaluations.weekCommencing, evaluation.weekCommencing)
-      )
-    );
-    if (existing.length > 0) {
-      const updated = await db.update(weeklyEvaluations)
-        .set(evaluation)
-        .where(eq(weeklyEvaluations.id, existing[0].id))
-        .returning();
-      return updated[0];
-    }
-    const inserted = await db.insert(weeklyEvaluations).values(evaluation).returning();
-    return inserted[0];
+    const upserted = await db.insert(weeklyEvaluations)
+      .values(evaluation)
+      .onConflictDoUpdate({
+        target: [weeklyEvaluations.studentId, weeklyEvaluations.weekCommencing],
+        set: {
+          overallGrade: evaluation.overallGrade,
+          performanceScore: evaluation.performanceScore,
+          teacherSigned: evaluation.teacherSigned,
+          parentSigned: evaluation.parentSigned,
+          signedDate: evaluation.signedDate,
+          hadithId: evaluation.hadithId,
+        }
+      })
+      .returning();
+    return upserted[0];
   } catch (error) {
     console.error('Error saving weekly evaluation:', error);
     throw new Error('Failed to save evaluation.', { cause: error });

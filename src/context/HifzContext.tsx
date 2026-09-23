@@ -414,7 +414,7 @@ export const DEFAULT_PARENT_SETTINGS: ParentSettings = {
 export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [students, setStudents] = useState<Student[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_STUDENTS);
-    return saved ? JSON.parse(saved) : INITIAL_STUDENTS;
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [adminSettings, setAdminSettings] = useState<AdminSettings>(() => {
@@ -464,11 +464,10 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try { return JSON.parse(saved); } catch {}
     }
     return {
-      role: 'teacher',
-      email: 'bilal.ustadh@madrasah.internal',
-      displayName: 'Ustadh Qari Bilal',
-      circleCode: 'CIRCLE-HIFZ-1',
-      allowedStudentIds: ['std-1', 'std-2']
+      role: 'unassigned' as any,
+      email: '',
+      displayName: 'Guest',
+      allowedStudentIds: []
     };
   });
 
@@ -479,8 +478,7 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [selectedStudentId, setSelectedStudentIdState] = useState<string>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_SELECTED_STUDENT);
-    if (saved) return saved;
-    return students[0]?.id || '';
+    return saved || '';
   });
 
   const setSelectedStudentId = (id: string) => {
@@ -502,7 +500,7 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } catch {}
     }
-    return 'teacher';
+    return 'unassigned' as any;
   });
 
   const setUserRole = (role: UserRole) => {
@@ -597,23 +595,34 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
         try {
           const token = await u.getIdToken();
           localStorage.setItem('madrasah_firebase_token', token);
+          
+          // Authenticated hydration from server
+          dataRepository.getStudents().then(cloudStudents => {
+            if (cloudStudents && cloudStudents.length > 0) {
+              setStudents(cloudStudents);
+            }
+          }).catch(() => {});
+
+          dataRepository.getAllHifzRecords().then(rec => {
+            if (rec && Object.keys(rec).length > 0) setHifzRecordsMap(rec);
+          }).catch(() => {});
+
+          dataRepository.getAllHomeLearningRecords().then(rec => {
+            if (rec && Object.keys(rec).length > 0) setHomeLearningMap(rec);
+          }).catch(() => {});
+
+          dataRepository.getAllTarbiyahRecords().then(rec => {
+            if (rec && Object.keys(rec).length > 0) setTarbiyahMap(rec);
+          }).catch(() => {});
+
+          dataRepository.getAllEvaluations().then(rec => {
+            if (rec && Object.keys(rec).length > 0) setEvaluationsMap(rec);
+          }).catch(() => {});
         } catch {}
       } else {
         localStorage.removeItem('madrasah_firebase_token');
       }
     });
-
-    // Hydrate students and records from dataRepository asynchronously on mount
-    dataRepository.getStudents().then(cloudStudents => {
-      if (cloudStudents && cloudStudents.length > 0) {
-        setStudents(prev => {
-          // Merge unique by id
-          const ids = new Set(prev.map(s => s.id));
-          const toAdd = cloudStudents.filter(s => !ids.has(s.id));
-          return [...prev, ...toAdd];
-        });
-      }
-    }).catch(() => {});
 
     return () => {
       unsubSync();
@@ -623,27 +632,27 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [hifzRecordsMap, setHifzRecordsMap] = useState<Record<string, DailyHifzRecord[]>>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_HIFZ);
-    return saved ? JSON.parse(saved) : INITIAL_HIFZ_RECORDS;
+    return saved ? JSON.parse(saved) : {};
   });
 
   const [homeLearningMap, setHomeLearningMap] = useState<Record<string, DailyHomeLearningRecord[]>>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_HOME);
-    return saved ? JSON.parse(saved) : INITIAL_HOME_LEARNING;
+    return saved ? JSON.parse(saved) : {};
   });
 
   const [tarbiyahMap, setTarbiyahMap] = useState<Record<string, DailyTarbiyahRecord[]>>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_TARBIYAH);
-    return saved ? JSON.parse(saved) : INITIAL_TARBIYAH_RECORDS;
+    return saved ? JSON.parse(saved) : {};
   });
 
   const [parentTasksMap, setParentTasksMap] = useState<Record<string, ParentTaskRecord[]>>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_PARENT_TASKS);
-    return saved ? JSON.parse(saved) : INITIAL_PARENT_TASKS;
+    return saved ? JSON.parse(saved) : {};
   });
 
   const [evaluationsMap, setEvaluationsMap] = useState<Record<string, WeeklyEvaluationRecord>>(() => {
     const saved = localStorage.getItem(STORAGE_KEY_EVAL);
-    return saved ? JSON.parse(saved) : INITIAL_WEEKLY_EVALUATIONS;
+    return saved ? JSON.parse(saved) : {};
   });
 
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
@@ -850,11 +859,12 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
     category: 'sabaq' | 'sabaqPara' | 'dawr1' | 'dawr2',
     data: Partial<LessonProgress>
   ) => {
+    let updatedRecord: DailyHifzRecord | undefined;
     setHifzRecordsMap(prev => {
       const list = prev[selectedStudentId] || [];
       const updated = list.map(item => {
         if (item.id === recordId) {
-          return {
+          const rec: DailyHifzRecord = {
             ...item,
             [category]: {
               ...item[category],
@@ -862,54 +872,118 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
             },
             teacherSigned: true
           };
+          updatedRecord = rec;
+          return rec;
         }
         return item;
       });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncHifzRecord(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync Hifz lesson:', err);
+      });
+    }
   };
 
   const updateAttendance = (recordId: string, status: AttendanceStatus) => {
+    let updatedRecord: DailyHifzRecord | undefined;
     setHifzRecordsMap(prev => {
       const list = prev[selectedStudentId] || [];
-      const updated = list.map(item => item.id === recordId ? { ...item, attendance: status } : item);
+      const updated = list.map(item => {
+        if (item.id === recordId) {
+          const rec = { ...item, attendance: status };
+          updatedRecord = rec;
+          return rec;
+        }
+        return item;
+      });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncHifzRecord(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync attendance:', err);
+      });
+    }
   };
 
   const updateTeacherComment = (recordId: string, comment: string, commentUrdu?: string, translatedComment?: string) => {
+    let updatedRecord: DailyHifzRecord | undefined;
     setHifzRecordsMap(prev => {
       const list = prev[selectedStudentId] || [];
-      const updated = list.map(item => item.id === recordId ? {
-        ...item,
-        comments: comment,
-        commentsUrdu: commentUrdu !== undefined ? commentUrdu : item.commentsUrdu,
-        commentsEnglishTranslation: translatedComment !== undefined ? translatedComment : item.commentsEnglishTranslation,
-        teacherSigned: true
-      } : item);
+      const updated = list.map(item => {
+        if (item.id === recordId) {
+          const rec: DailyHifzRecord = {
+            ...item,
+            comments: comment,
+            commentsUrdu: commentUrdu !== undefined ? commentUrdu : item.commentsUrdu,
+            commentsEnglishTranslation: translatedComment !== undefined ? translatedComment : item.commentsEnglishTranslation,
+            teacherSigned: true
+          };
+          updatedRecord = rec;
+          return rec;
+        }
+        return item;
+      });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncHifzRecord(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync teacher comment:', err);
+      });
+    }
   };
 
   const signAsParent = (recordId: string) => {
+    let updatedRecord: DailyHifzRecord | undefined;
     setHifzRecordsMap(prev => {
       const list = prev[selectedStudentId] || [];
       const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
-      const updated = list.map(item => item.id === recordId ? {
-        ...item,
-        parentSigned: true,
-        parentSignDate: nowStr
-      } : item);
+      const updated = list.map(item => {
+        if (item.id === recordId) {
+          const rec: DailyHifzRecord = {
+            ...item,
+            parentSigned: true,
+            parentSignDate: nowStr
+          };
+          updatedRecord = rec;
+          return rec;
+        }
+        return item;
+      });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncHifzRecord(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync parent signature:', err);
+      });
+    }
   };
 
   const signAsTeacher = (recordId: string) => {
+    let updatedRecord: DailyHifzRecord | undefined;
     setHifzRecordsMap(prev => {
       const list = prev[selectedStudentId] || [];
-      const updated = list.map(item => item.id === recordId ? { ...item, teacherSigned: true } : item);
+      const updated = list.map(item => {
+        if (item.id === recordId) {
+          const rec: DailyHifzRecord = { ...item, teacherSigned: true };
+          updatedRecord = rec;
+          return rec;
+        }
+        return item;
+      });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncHifzRecord(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync teacher signature:', err);
+      });
+    }
   };
 
   const updateHomeLearningMins = (
@@ -917,26 +991,55 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
     field: 'sabaqMins' | 'sabaqParaMins' | 'dawr1Mins' | 'dawr2Mins',
     mins: number
   ) => {
+    let updatedRecord: DailyHomeLearningRecord | undefined;
     setHomeLearningMap(prev => {
       const list = (prev[selectedStudentId] && prev[selectedStudentId].length > 0)
         ? prev[selectedStudentId]
         : createBlankWeeklyHomeLearning();
-      const updated = list.map(item => item.day === day ? { ...item, [field]: mins } : item);
+      const updated = list.map(item => {
+        if (item.day === day) {
+          const rec = { ...item, [field]: mins };
+          updatedRecord = rec;
+          return rec;
+        }
+        return item;
+      });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncHomeLearning(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync home learning mins:', err);
+      });
+    }
   };
 
   const signHomeLearningParent = (day: string) => {
+    let updatedRecord: DailyHomeLearningRecord | undefined;
     setHomeLearningMap(prev => {
       const list = (prev[selectedStudentId] && prev[selectedStudentId].length > 0)
         ? prev[selectedStudentId]
         : createBlankWeeklyHomeLearning();
-      const updated = list.map(item => item.day === day ? { ...item, parentSigned: true } : item);
+      const updated = list.map(item => {
+        if (item.day === day) {
+          const rec = { ...item, parentSigned: true };
+          updatedRecord = rec;
+          return rec;
+        }
+        return item;
+      });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncHomeLearning(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync home learning parent signature:', err);
+      });
+    }
   };
 
   const togglePrayerLocation = (day: string, prayer: 'fajr' | 'dhuhr' | 'asr' | 'maghrib' | 'ishaa') => {
+    let updatedRecord: DailyTarbiyahRecord | undefined;
     setTarbiyahMap(prev => {
       const list = (prev[selectedStudentId] && prev[selectedStudentId].length > 0)
         ? prev[selectedStudentId]
@@ -949,18 +1052,26 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
           else if (current === 'HM') next = 'none';
           else next = 'MSJ';
 
-          return {
+          const rec: DailyTarbiyahRecord = {
             ...item,
             prayers: {
               ...item.prayers,
               [prayer]: next
             }
           };
+          updatedRecord = rec;
+          return rec;
         }
         return item;
       });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncTarbiyah(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync tarbiyah prayers:', err);
+      });
+    }
   };
 
   const updateTarbiyahBool = (
@@ -968,13 +1079,27 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
     field: 'dailySadaqah' | 'eesaalThawaab' | 'dailyDuasDhikr' | 'dailyQuranWird',
     val: boolean
   ) => {
+    let updatedRecord: DailyTarbiyahRecord | undefined;
     setTarbiyahMap(prev => {
       const list = (prev[selectedStudentId] && prev[selectedStudentId].length > 0)
         ? prev[selectedStudentId]
         : createBlankWeeklyTarbiyah();
-      const updated = list.map(item => item.day === day ? { ...item, [field]: val } : item);
+      const updated = list.map(item => {
+        if (item.day === day) {
+          const rec = { ...item, [field]: val };
+          updatedRecord = rec;
+          return rec;
+        }
+        return item;
+      });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncTarbiyah(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync tarbiyah activity:', err);
+      });
+    }
   };
 
   const updateTarbiyahMins = (
@@ -982,13 +1107,27 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
     field: 'collectiveTaleemMins' | 'collectiveDuaMins',
     mins: number
   ) => {
+    let updatedRecord: DailyTarbiyahRecord | undefined;
     setTarbiyahMap(prev => {
       const list = (prev[selectedStudentId] && prev[selectedStudentId].length > 0)
         ? prev[selectedStudentId]
         : createBlankWeeklyTarbiyah();
-      const updated = list.map(item => item.day === day ? { ...item, [field]: mins } : item);
+      const updated = list.map(item => {
+        if (item.day === day) {
+          const rec = { ...item, [field]: mins };
+          updatedRecord = rec;
+          return rec;
+        }
+        return item;
+      });
       return { ...prev, [selectedStudentId]: updated };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncTarbiyah(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync tarbiyah mins:', err);
+      });
+    }
   };
 
   const addParentTask = (task: string, mistakesNotes: string) => {
@@ -1022,6 +1161,7 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateWeeklyEvaluation = (updates: Partial<WeeklyEvaluationRecord>) => {
+    let updatedEvaluation: WeeklyEvaluationRecord | undefined;
     setEvaluationsMap(prev => {
       const ukDate = getUkCurrentDate();
       const current = prev[selectedStudentId] || {
@@ -1038,17 +1178,26 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
         parentSigned: false,
         automatedReportGenerated: false
       };
+      const rec: WeeklyEvaluationRecord = {
+        ...current,
+        ...updates
+      };
+      updatedEvaluation = rec;
       return {
         ...prev,
-        [selectedStudentId]: {
-          ...current,
-          ...updates
-        }
+        [selectedStudentId]: rec
       };
     });
+
+    if (updatedEvaluation && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncEvaluation(selectedStudentId, updatedEvaluation).catch(err => {
+        console.warn('[HifzContext] Failed to sync weekly evaluation:', err);
+      });
+    }
   };
 
   const signEvaluation = (asRole: 'teacher' | 'parent') => {
+    let updatedRecord: WeeklyEvaluationRecord | undefined;
     setEvaluationsMap(prev => {
       const ukDate = getUkCurrentDate();
       const current = prev[selectedStudentId] || {
@@ -1065,14 +1214,22 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
         parentSigned: false,
         automatedReportGenerated: false
       };
+      const rec = {
+        ...current,
+        ...(asRole === 'teacher' ? { teacherSigned: true } : { parentSigned: true })
+      };
+      updatedRecord = rec;
       return {
         ...prev,
-        [selectedStudentId]: {
-          ...current,
-          ...(asRole === 'teacher' ? { teacherSigned: true } : { parentSigned: true })
-        }
+        [selectedStudentId]: rec
       };
     });
+
+    if (updatedRecord && selectedStudentId && selectedStudentId !== 'no-student') {
+      dataRepository.syncEvaluation(selectedStudentId, updatedRecord).catch(err => {
+        console.warn('[HifzContext] Failed to sync signed weekly evaluation:', err);
+      });
+    }
   };
 
   const findStudentByGmail = (email: string): Student | null => {
@@ -1132,8 +1289,7 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const matched = students.filter(s =>
       (s.parentEmail && s.parentEmail.toLowerCase() === query) ||
       (s.studentEmail && s.studentEmail.toLowerCase() === query) ||
-      (s.enrollmentCode && s.enrollmentCode.toLowerCase() === query) ||
-      (s.rollNumber && s.rollNumber.toLowerCase() === query)
+      (s.enrollmentCode && s.enrollmentCode.toLowerCase() === query)
     );
 
     if (matched.length === 0) {
@@ -1274,6 +1430,45 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logoutToLanding = () => {
+    // Shared Device Protection: Wipe all sensitive child data and tokens from browser storage
+    const storageKeysToPurge = [
+      STORAGE_KEY_STUDENTS,
+      STORAGE_KEY_HIFZ,
+      STORAGE_KEY_HOME,
+      STORAGE_KEY_TARBIYAH,
+      STORAGE_KEY_PARENT_TASKS,
+      STORAGE_KEY_EVAL,
+      STORAGE_KEY_CURRENT_USER,
+      STORAGE_KEY_SELECTED_STUDENT,
+      STORAGE_KEY_ACTIVE_ROLE,
+      'madrasah_firebase_token',
+      'madrasah_students',
+      'madrasah_hifz_records',
+      'madrasah_home_learning',
+      'madrasah_tarbiyah',
+      'madrasah_evaluations'
+    ];
+    for (const key of storageKeysToPurge) {
+      try {
+        localStorage.removeItem(key);
+      } catch {}
+    }
+
+    // Wipe in-memory React state to prevent data leakage on shared devices
+    setStudents([]);
+    setHifzRecordsMap({});
+    setHomeLearningMap({});
+    setTarbiyahMap({});
+    setParentTasksMap({});
+    setEvaluationsMap({});
+    setSelectedStudentId('');
+    setCurrentUser({
+      role: 'unassigned' as any,
+      email: '',
+      displayName: 'Guest',
+      allowedStudentIds: []
+    });
+    setUserRole('unassigned' as any);
     setPortalMode('landing');
   };
 
@@ -1410,13 +1605,13 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
           (s.parentEmail && s.parentEmail.toLowerCase() === userEmail) ||
           (s.studentEmail && s.studentEmail.toLowerCase() === userEmail)
         );
-        const child = matchedStudents[0] || students[0];
+        const child = matchedStudents[0];
         setCurrentUser({
           role: 'parent',
           email: userEmail,
           displayName: child?.parentName || 'Parent',
           studentId: child?.id,
-          allowedStudentIds: matchedStudents.length > 0 ? matchedStudents.map(s => s.id) : (child ? [child.id] : [])
+          allowedStudentIds: matchedStudents.length > 0 ? matchedStudents.map(s => s.id) : []
         });
         if (child) setSelectedStudentId(child.id);
         setUserRole('parent');
@@ -1474,19 +1669,25 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
         (s.parentEmail && s.parentEmail.toLowerCase() === userEmail) ||
         (s.studentEmail && s.studentEmail.toLowerCase() === userEmail)
       );
-      const child = matchedStudents[0] || students[0];
+      if (matchedStudents.length === 0) {
+        return {
+          success: false,
+          message: 'This Google account is not linked to any registered student. Please contact your Madrasah Administrator.'
+        };
+      }
+      const child = matchedStudents[0];
       setCurrentUser({
         role: 'parent',
         email: userEmail,
-        displayName: user.displayName || child?.parentName || 'Parent',
-        studentId: child?.id,
-        allowedStudentIds: matchedStudents.length > 0 ? matchedStudents.map(s => s.id) : (child ? [child.id] : [])
+        displayName: user.displayName || child.parentName || 'Parent',
+        studentId: child.id,
+        allowedStudentIds: matchedStudents.map(s => s.id)
       });
-      if (child) setSelectedStudentId(child.id);
+      setSelectedStudentId(child.id);
       setUserRole('parent');
       setPortalMode('student-parent');
       setActiveTab('dashboard');
-      return { success: true, message: `Signed in with Google for ${child?.name || 'Student'}` };
+      return { success: true, message: `Signed in with Google for ${child.name}` };
     } catch (err: any) {
       console.error('Google Sign-in failed:', err);
       return { success: false, message: err.message || 'Google sign-in popup failed or was cancelled.' };
@@ -1499,7 +1700,6 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await signOut(auth);
     } catch {}
-    localStorage.removeItem('madrasah_firebase_token');
     logoutToLanding();
   };
 

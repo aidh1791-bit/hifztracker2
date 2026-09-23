@@ -27,10 +27,24 @@ export async function authenticatedFetch(
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  return fetch(input, {
+  let response = await fetch(input, {
     ...init,
     headers
   });
+
+  // If response is 401 Unauthorized and we had a token, force-refresh once to handle mid-session expiration
+  if (response.status === 401 && token) {
+    const refreshedToken = await getFreshToken(true);
+    if (refreshedToken && refreshedToken !== token) {
+      headers.set('Authorization', `Bearer ${refreshedToken}`);
+      response = await fetch(input, {
+        ...init,
+        headers
+      });
+    }
+  }
+
+  return response;
 }
 
 export const apiClient = {

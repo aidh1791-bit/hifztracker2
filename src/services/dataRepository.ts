@@ -116,16 +116,21 @@ export const dataRepository = {
   async saveStudents(students: Student[]): Promise<void> {
     safeSetItem(STORAGE_KEYS.STUDENTS, students);
     recordRevision('student', 'bulk', 'update');
-    try {
-      for (const std of students) {
-        await authenticatedFetch('/api/students', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(std)
-        });
+    for (const std of students) {
+      try {
+        if (syncQueue.isNetworkOnline()) {
+          const res = await authenticatedFetch('/api/students', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(std)
+          });
+          if (!res.ok) throw new Error(`Status ${res.status}`);
+        } else {
+          throw new Error('Device is offline');
+        }
+      } catch {
+        syncQueue.enqueue('/api/students', 'POST', std, 'student', `Save student ${std.name}`);
       }
-    } catch (err) {
-      console.warn('[DataRepository] Deferred cloud sync for students:', err);
     }
   },
 
@@ -266,7 +271,35 @@ export const dataRepository = {
 
   // --- Home Learning Records ---
   async getAllHomeLearningRecords(): Promise<Record<string, DailyHomeLearningRecord[]>> {
-    return safeGetItem<Record<string, DailyHomeLearningRecord[]>>(STORAGE_KEYS.HOME_LEARNING, INITIAL_HOME_LEARNING);
+    try {
+      const res = await authenticatedFetch('/api/records/home');
+      if (res.ok) {
+        const records = await res.json();
+        if (Array.isArray(records)) {
+          const map: Record<string, DailyHomeLearningRecord[]> = {};
+          for (const r of records) {
+            if (!map[r.studentId]) map[r.studentId] = [];
+            map[r.studentId].push({
+              date: r.date,
+              day: r.day as any,
+              sabaqMins: r.sabaqMins || 0,
+              sabaqParaMins: r.sabaqParaMins || 0,
+              dawr1Mins: r.dawr1Mins || 0,
+              dawr2Mins: r.dawr2Mins || 0,
+              parentSigned: r.parentSigned || false,
+              notes: r.parentComments || ''
+            });
+          }
+          safeSetItem(STORAGE_KEYS.HOME_LEARNING, map);
+          return map;
+        }
+      } else if (res.status === 401 || res.status === 403) {
+        return {};
+      }
+    } catch {
+      // offline fallback
+    }
+    return safeGetItem<Record<string, DailyHomeLearningRecord[]>>(STORAGE_KEYS.HOME_LEARNING, {});
   },
 
   async saveAllHomeLearningRecords(homeMap: Record<string, DailyHomeLearningRecord[]>): Promise<void> {
@@ -275,6 +308,10 @@ export const dataRepository = {
   },
 
   async syncHomeLearningRecord(studentId: string, record: DailyHomeLearningRecord): Promise<void> {
+    return this.syncHomeLearning(studentId, record);
+  },
+
+  async syncHomeLearning(studentId: string, record: DailyHomeLearningRecord): Promise<void> {
     const payload = {
       studentId,
       date: record.date,
@@ -310,7 +347,42 @@ export const dataRepository = {
 
   // --- Tarbiyah Records ---
   async getAllTarbiyahRecords(): Promise<Record<string, DailyTarbiyahRecord[]>> {
-    return safeGetItem<Record<string, DailyTarbiyahRecord[]>>(STORAGE_KEYS.TARBIYAH, INITIAL_TARBIYAH_RECORDS);
+    try {
+      const res = await authenticatedFetch('/api/records/tarbiyah');
+      if (res.ok) {
+        const records = await res.json();
+        if (Array.isArray(records)) {
+          const map: Record<string, DailyTarbiyahRecord[]> = {};
+          for (const r of records) {
+            if (!map[r.studentId]) map[r.studentId] = [];
+            map[r.studentId].push({
+              date: r.date,
+              day: r.day as any,
+              prayers: {
+                fajr: (r.fajr || 'none') as any,
+                dhuhr: (r.dhuhr || 'none') as any,
+                asr: (r.asr || 'none') as any,
+                maghrib: (r.maghrib || 'none') as any,
+                ishaa: (r.ishaa || 'none') as any,
+              },
+              dailySadaqah: Boolean(r.dailySadaqah),
+              eesaalThawaab: Boolean(r.eesaalThawaab),
+              dailyDuasDhikr: Boolean(r.dailyDuasDhikr),
+              dailyQuranWird: Boolean(r.dailyQuranWird),
+              collectiveTaleemMins: 0,
+              collectiveDuaMins: 0
+            });
+          }
+          safeSetItem(STORAGE_KEYS.TARBIYAH, map);
+          return map;
+        }
+      } else if (res.status === 401 || res.status === 403) {
+        return {};
+      }
+    } catch {
+      // offline fallback
+    }
+    return safeGetItem<Record<string, DailyTarbiyahRecord[]>>(STORAGE_KEYS.TARBIYAH, {});
   },
 
   async saveAllTarbiyahRecords(tarbiyahMap: Record<string, DailyTarbiyahRecord[]>): Promise<void> {
@@ -319,6 +391,10 @@ export const dataRepository = {
   },
 
   async syncTarbiyahRecord(studentId: string, record: DailyTarbiyahRecord): Promise<void> {
+    return this.syncTarbiyah(studentId, record);
+  },
+
+  async syncTarbiyah(studentId: string, record: DailyTarbiyahRecord): Promise<void> {
     const payload = {
       studentId,
       date: record.date,
@@ -356,7 +432,38 @@ export const dataRepository = {
 
   // --- Weekly Evaluations ---
   async getAllEvaluations(): Promise<Record<string, WeeklyEvaluationRecord>> {
-    return safeGetItem<Record<string, WeeklyEvaluationRecord>>(STORAGE_KEYS.EVALUATIONS, INITIAL_WEEKLY_EVALUATIONS);
+    try {
+      const res = await authenticatedFetch('/api/evaluations');
+      if (res.ok) {
+        const records = await res.json();
+        if (Array.isArray(records)) {
+          const map: Record<string, WeeklyEvaluationRecord> = {};
+          for (const r of records) {
+            map[r.studentId] = {
+              id: String(r.id),
+              weekCommencing: r.weekCommencing,
+              currentJuz: 0,
+              currentSurah: '',
+              islamicStudies: { passed: true, teacherComments: '' },
+              duasMemorisation: { passed: true, currentDua: '' },
+              surahMemorisation: { passed: true, parentComments: '' },
+              teacherOverallFeedback: r.overallGrade || '',
+              parentOverallFeedback: '',
+              teacherSigned: Boolean(r.teacherSigned),
+              parentSigned: Boolean(r.parentSigned),
+              automatedReportGenerated: false
+            };
+          }
+          safeSetItem(STORAGE_KEYS.EVALUATIONS, map);
+          return map;
+        }
+      } else if (res.status === 401 || res.status === 403) {
+        return {};
+      }
+    } catch {
+      // offline fallback
+    }
+    return safeGetItem<Record<string, WeeklyEvaluationRecord>>(STORAGE_KEYS.EVALUATIONS, {});
   },
 
   async saveAllEvaluations(evalMap: Record<string, WeeklyEvaluationRecord>): Promise<void> {

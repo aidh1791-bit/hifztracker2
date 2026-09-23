@@ -1,4 +1,4 @@
-import { getFreshToken } from './apiClient';
+import { getFreshToken, authenticatedFetch } from './apiClient';
 
 export interface QueuedMutation {
   id: string;
@@ -200,14 +200,9 @@ class SyncQueueService {
       this.notify();
 
       try {
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        };
-
-        const res = await fetch(item.endpoint, {
+        const res = await authenticatedFetch(item.endpoint, {
           method: item.method,
-          headers,
+          headers: { 'Content-Type': 'application/json' },
           body: item.payload ? JSON.stringify(item.payload) : undefined
         });
 

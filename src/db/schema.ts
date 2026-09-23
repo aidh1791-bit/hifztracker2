@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, boolean, timestamp } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, integer, boolean, timestamp, unique } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 export const users = pgTable('users', {
@@ -56,7 +56,9 @@ export const dailyHifzRecords = pgTable('daily_hifz_records', {
   dawr2Passed: boolean('dawr2_passed'),
   comments: text('comments').notNull().default(''),
   createdAt: timestamp('created_at').defaultNow(),
-});
+}, (table) => [
+  unique('daily_hifz_records_student_id_date_unique').on(table.studentId, table.date)
+]);
 
 export const dailyHomeLearningRecords = pgTable('daily_home_learning_records', {
   id: serial('id').primaryKey(),
@@ -72,7 +74,9 @@ export const dailyHomeLearningRecords = pgTable('daily_home_learning_records', {
   parentSigned: boolean('parent_signed').notNull().default(false),
   parentComments: text('parent_comments').notNull().default(''),
   createdAt: timestamp('created_at').defaultNow(),
-});
+}, (table) => [
+  unique('daily_home_learning_records_student_id_date_unique').on(table.studentId, table.date)
+]);
 
 export const dailyTarbiyahRecords = pgTable('daily_tarbiyah_records', {
   id: serial('id').primaryKey(),
@@ -92,7 +96,9 @@ export const dailyTarbiyahRecords = pgTable('daily_tarbiyah_records', {
   dailyQuranWird: boolean('daily_quran_wird').notNull().default(false),
   parentSignature: boolean('parent_signature').notNull().default(false),
   createdAt: timestamp('created_at').defaultNow(),
-});
+}, (table) => [
+  unique('daily_tarbiyah_records_student_id_date_unique').on(table.studentId, table.date)
+]);
 
 export const weeklyEvaluations = pgTable('weekly_evaluations', {
   id: serial('id').primaryKey(),
@@ -107,7 +113,9 @@ export const weeklyEvaluations = pgTable('weekly_evaluations', {
   signedDate: text('signed_date'),
   hadithId: integer('hadith_id').notNull().default(1),
   createdAt: timestamp('created_at').defaultNow(),
-});
+}, (table) => [
+  unique('weekly_evaluations_student_id_week_commencing_unique').on(table.studentId, table.weekCommencing)
+]);
 
 export const madrasahSettings = pgTable('madrasah_settings', {
   id: serial('id').primaryKey(),

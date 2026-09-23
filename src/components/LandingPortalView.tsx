@@ -876,14 +876,23 @@ export const LandingPortalView: React.FC = () => {
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setIsSecurityModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shrink-0 hover:shadow"
-          >
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>Data Privacy & Governance</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsSecurityModalOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-bold transition-all shrink-0 hover:shadow"
+            >
+              <ShieldCheck className="w-4 h-4 text-emerald-300" />
+              <span>Privacy Notice (GDPR)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsSecurityModalOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shrink-0 hover:shadow"
+            >
+              <span>Parents Informed & SAR</span>
+            </button>
+          </div>
         </div>
       </div>
 
