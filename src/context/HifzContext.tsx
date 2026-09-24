@@ -65,6 +65,8 @@ import {
 } from 'firebase/auth';
 import { dataRepository } from '../services/dataRepository';
 import { syncQueue } from '../services/syncQueue';
+import { authenticatedFetch } from '../services/apiClient';
+import { DEMO_MODE } from '../features/demo/demoMode';
 
 interface HifzContextType {
   students: Student[];
@@ -593,38 +595,86 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setFirebaseLoading(false);
       if (u) {
         try {
-          // Authenticated hydration from server using fresh token via apiClient
-          dataRepository.getStudents().then(cloudStudents => {
-            if (cloudStudents && cloudStudents.length > 0) {
-              setStudents(cloudStudents);
+          // 1. Verify identity & derive role directly from server authority /api/me (Phase 2 & 5)
+          const meRes = await authenticatedFetch('/api/me');
+          if (meRes.ok) {
+            const meData = await meRes.json();
+            const derivedRole = (meData.role || 'unassigned') as UserRole;
+            setUserRoleState(derivedRole);
+            setCurrentUser({
+              uid: meData.uid || u.uid,
+              name: u.displayName || u.email?.split('@')[0] || 'User',
+              displayName: u.displayName || u.email?.split('@')[0] || 'User',
+              role: derivedRole,
+              email: meData.email || u.email || '',
+              circleCode: meData.circleCode || undefined,
+              allowedStudentIds: meData.allowedStudentIds || []
+            });
+
+            // If unassigned or disabled, DO NOT load or cache student data
+            if (derivedRole === 'unassigned' || derivedRole === 'disabled') {
+              setStudents([]);
+              setHifzRecordsMap({});
+              setHomeLearningMap({});
+              setTarbiyahMap({});
+              setParentTasksMap({});
+              setEvaluationsMap({});
+              setSelectedStudentIdState('');
+              return;
             }
-          }).catch(() => {});
 
-          dataRepository.getAllHifzRecords().then(rec => {
-            if (rec && Object.keys(rec).length > 0) setHifzRecordsMap(rec);
-          }).catch(() => {});
+            // Sync portal mode with server-derived role
+            if (derivedRole === 'admin') setPortalMode('admin');
+            else if (derivedRole === 'teacher') setPortalMode('teacher');
+            else if (derivedRole === 'parent' || derivedRole === 'student') setPortalMode('student-parent');
+          }
 
-          dataRepository.getAllHomeLearningRecords().then(rec => {
-            if (rec && Object.keys(rec).length > 0) setHomeLearningMap(rec);
-          }).catch(() => {});
+          // 2. Hydrate scoped student records from server
+          const cloudStudents = await dataRepository.getStudents();
+          if (cloudStudents && cloudStudents.length > 0) {
+            setStudents(cloudStudents);
+            setSelectedStudentIdState(prev => {
+              if (prev && cloudStudents.some(s => s.id === prev)) return prev;
+              return cloudStudents[0].id;
+            });
+          }
 
-          dataRepository.getAllTarbiyahRecords().then(rec => {
-            if (rec && Object.keys(rec).length > 0) setTarbiyahMap(rec);
-          }).catch(() => {});
+          const [hifzRec, homeRec, tarbiyahRec, evalRec] = await Promise.all([
+            dataRepository.getAllHifzRecords().catch(() => ({})),
+            dataRepository.getAllHomeLearningRecords().catch(() => ({})),
+            dataRepository.getAllTarbiyahRecords().catch(() => ({})),
+            dataRepository.getAllEvaluations().catch(() => ({}))
+          ]);
 
-          dataRepository.getAllEvaluations().then(rec => {
-            if (rec && Object.keys(rec).length > 0) setEvaluationsMap(rec);
-          }).catch(() => {});
-        } catch {}
+          if (hifzRec && Object.keys(hifzRec).length > 0) setHifzRecordsMap(hifzRec);
+          if (homeRec && Object.keys(homeRec).length > 0) setHomeLearningMap(homeRec);
+          if (tarbiyahRec && Object.keys(tarbiyahRec).length > 0) setTarbiyahMap(tarbiyahRec);
+          if (evalRec && Object.keys(evalRec).length > 0) setEvaluationsMap(evalRec);
+        } catch (err) {
+          console.error('[HifzContext] Auth hydration error:', err);
+        }
       } else {
-        // Shared-device wipe on sign-out
+        // Shared-device wipe on sign-out (Phase 5 requirement)
         setStudents([]);
         setHifzRecordsMap({});
         setHomeLearningMap({});
         setTarbiyahMap({});
         setParentTasksMap({});
         setEvaluationsMap({});
-        setSelectedStudentId('');
+        setSelectedStudentIdState('');
+        setUserRoleState('unassigned');
+        setPortalMode('landing');
+        try {
+          localStorage.removeItem(STORAGE_KEY_STUDENTS);
+          localStorage.removeItem(STORAGE_KEY_HIFZ);
+          localStorage.removeItem(STORAGE_KEY_HOME);
+          localStorage.removeItem(STORAGE_KEY_TARBIYAH);
+          localStorage.removeItem(STORAGE_KEY_PARENT_TASKS);
+          localStorage.removeItem(STORAGE_KEY_EVAL);
+          localStorage.removeItem(STORAGE_KEY_CURRENT_USER);
+          localStorage.removeItem(STORAGE_KEY_ACTIVE_ROLE);
+          localStorage.removeItem(STORAGE_KEY_SELECTED_STUDENT);
+        } catch {}
       }
     });
 
@@ -1344,6 +1394,10 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const enterTeacherPortal = (passcode?: string): boolean => {
+    if (!DEMO_MODE) {
+      console.warn('[Security] Passcode teacher access is disabled in production. Authenticated sign-in required.');
+      return false;
+    }
     const expectedPasscode = teacherSettings.teacherPasscode || '1234';
     if (passcode !== undefined && passcode.trim() !== expectedPasscode) {
       return false;
@@ -1368,6 +1422,12 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const enterTeacherPortalByCredentials = (emailOrPasscode: string, circleCode?: string) => {
+    if (!DEMO_MODE) {
+      return {
+        success: false,
+        message: 'Passcode-based teacher access is disabled in production. Please sign in with your verified account.'
+      };
+    }
     const cleanInput = emailOrPasscode.trim().toLowerCase();
     if (!cleanInput) {
       return {
@@ -1426,6 +1486,10 @@ export const HifzProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const enterAdminPortal = (passcode: string): boolean => {
+    if (!DEMO_MODE) {
+      console.warn('[Security] Passcode admin access is disabled in production. Authenticated sign-in required.');
+      return false;
+    }
     const requiredPasscode = adminSettings.adminPasscode || '9999';
     if (passcode.trim() !== requiredPasscode) {
       return false;

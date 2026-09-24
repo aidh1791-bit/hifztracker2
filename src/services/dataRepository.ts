@@ -61,18 +61,27 @@ function safeSetItem<T>(key: string, value: T): void {
 function recordRevision(
   entityType: DataChangeRevision['entityType'],
   entityId: string,
-  action: DataChangeRevision['action']
-): void {
+  action: DataChangeRevision['action'],
+  syncedToCloud: boolean = false
+): string {
   const revisions = safeGetItem<DataChangeRevision[]>(STORAGE_KEYS.REVISIONS, []);
+  const revId = `rev-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const newRev: DataChangeRevision = {
-    id: `rev-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    id: revId,
     entityType,
     entityId,
     timestampUtc: new Date().toISOString(),
     action,
-    syncedToCloud: true
+    syncedToCloud
   };
   safeSetItem(STORAGE_KEYS.REVISIONS, [newRev, ...revisions.slice(0, 499)]);
+  return revId;
+}
+
+function markRevisionSynced(revId: string): void {
+  const revisions = safeGetItem<DataChangeRevision[]>(STORAGE_KEYS.REVISIONS, []);
+  const updated = revisions.map(r => r.id === revId ? { ...r, syncedToCloud: true } : r);
+  safeSetItem(STORAGE_KEYS.REVISIONS, updated);
 }
 
 /**
@@ -145,21 +154,18 @@ export const dataRepository = {
       updated = [...current, student];
     }
     safeSetItem(STORAGE_KEYS.STUDENTS, updated);
-    recordRevision('student', student.id, idx >= 0 ? 'update' : 'create');
+    const revId = recordRevision('student', student.id, idx >= 0 ? 'update' : 'create', false);
 
-    try {
-      if (syncQueue.isNetworkOnline()) {
-        const res = await authenticatedFetch('/api/students', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(student)
-        });
-        if (!res.ok) throw new Error(`Status ${res.status}`);
-      } else {
-        throw new Error('Device is offline');
-      }
-    } catch (err: any) {
-      syncQueue.enqueue('/api/students', 'POST', student, 'student', `Save student ${student.name}`);
+    const result = await syncQueue.executeMutation({
+      endpoint: '/api/students',
+      method: 'POST',
+      payload: student,
+      entityType: 'student',
+      description: `Save student ${student.name}`
+    });
+
+    if (result.status === 'synced') {
+      markRevisionSynced(revId);
     }
   },
 
@@ -167,17 +173,18 @@ export const dataRepository = {
     const current = await this.getStudents();
     const filtered = current.filter(s => s.id !== studentId);
     safeSetItem(STORAGE_KEYS.STUDENTS, filtered);
-    recordRevision('student', studentId, 'delete');
+    const revId = recordRevision('student', studentId, 'delete', false);
 
-    try {
-      if (syncQueue.isNetworkOnline()) {
-        const res = await authenticatedFetch(`/api/students/${studentId}`, { method: 'DELETE' });
-        if (!res.ok) throw new Error(`Status ${res.status}`);
-      } else {
-        throw new Error('Device is offline');
-      }
-    } catch (err: any) {
-      syncQueue.enqueue(`/api/students/${studentId}`, 'DELETE', null, 'student', `Delete student ID ${studentId}`);
+    const result = await syncQueue.executeMutation({
+      endpoint: `/api/students/${studentId}`,
+      method: 'DELETE',
+      payload: null,
+      entityType: 'student',
+      description: `Delete student ID ${studentId}`
+    });
+
+    if (result.status === 'synced') {
+      markRevisionSynced(revId);
     }
   },
 
@@ -245,27 +252,18 @@ export const dataRepository = {
       comments: record.comments || ''
     };
 
-    recordRevision('hifz_record', record.id, 'update');
+    const revId = recordRevision('hifz_record', record.id, 'update', false);
 
-    try {
-      if (syncQueue.isNetworkOnline()) {
-        const res = await authenticatedFetch('/api/records/hifz', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } else {
-        throw new Error('Offline');
-      }
-    } catch {
-      syncQueue.enqueue(
-        '/api/records/hifz',
-        'POST',
-        payload,
-        'hifz_record',
-        `Recitation for student ${studentId} on ${record.day}`
-      );
+    const result = await syncQueue.executeMutation({
+      endpoint: '/api/records/hifz',
+      method: 'POST',
+      payload,
+      entityType: 'hifz_record',
+      description: `Recitation for student ${studentId} on ${record.day}`
+    });
+
+    if (result.status === 'synced') {
+      markRevisionSynced(revId);
     }
   },
 
@@ -323,25 +321,18 @@ export const dataRepository = {
       parentSigned: record.parentSigned || false
     };
 
-    try {
-      if (syncQueue.isNetworkOnline()) {
-        const res = await authenticatedFetch('/api/records/home', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } else {
-        throw new Error('Offline');
-      }
-    } catch {
-      syncQueue.enqueue(
-        '/api/records/home',
-        'POST',
-        payload,
-        'home_learning',
-        `Home learning for ${studentId} on ${record.day}`
-      );
+    const revId = recordRevision('home_learning', `${studentId}:${record.date}`, 'update', false);
+
+    const result = await syncQueue.executeMutation({
+      endpoint: '/api/records/home',
+      method: 'POST',
+      payload,
+      entityType: 'home_learning',
+      description: `Home learning for ${studentId} on ${record.day}`
+    });
+
+    if (result.status === 'synced') {
+      markRevisionSynced(revId);
     }
   },
 
@@ -408,25 +399,18 @@ export const dataRepository = {
       collectiveDuaMins: record.collectiveDuaMins || 0
     };
 
-    try {
-      if (syncQueue.isNetworkOnline()) {
-        const res = await authenticatedFetch('/api/records/tarbiyah', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } else {
-        throw new Error('Offline');
-      }
-    } catch {
-      syncQueue.enqueue(
-        '/api/records/tarbiyah',
-        'POST',
-        payload,
-        'tarbiyah',
-        `Tarbiyah for ${studentId} on ${record.day}`
-      );
+    const revId = recordRevision('tarbiyah', `${studentId}:${record.date}`, 'update', false);
+
+    const result = await syncQueue.executeMutation({
+      endpoint: '/api/records/tarbiyah',
+      method: 'POST',
+      payload,
+      entityType: 'tarbiyah',
+      description: `Tarbiyah for ${studentId} on ${record.day}`
+    });
+
+    if (result.status === 'synced') {
+      markRevisionSynced(revId);
     }
   },
 
@@ -483,25 +467,18 @@ export const dataRepository = {
       hadithId: 1
     };
 
-    try {
-      if (syncQueue.isNetworkOnline()) {
-        const res = await authenticatedFetch('/api/evaluations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } else {
-        throw new Error('Offline');
-      }
-    } catch {
-      syncQueue.enqueue(
-        '/api/evaluations',
-        'POST',
-        payload,
-        'evaluation',
-        `Weekly Evaluation for ${studentId}`
-      );
+    const revId = recordRevision('evaluation', `${studentId}:${evaluation.weekCommencing}`, 'update', false);
+
+    const result = await syncQueue.executeMutation({
+      endpoint: '/api/evaluations',
+      method: 'POST',
+      payload,
+      entityType: 'evaluation',
+      description: `Weekly Evaluation for ${studentId}`
+    });
+
+    if (result.status === 'synced') {
+      markRevisionSynced(revId);
     }
   },
 
@@ -524,26 +501,18 @@ export const dataRepository = {
 
   async saveAdminSettings(settings: AdminSettings): Promise<void> {
     safeSetItem(STORAGE_KEYS.ADMIN_SETTINGS, settings);
-    recordRevision('settings', 'admin', 'update');
-    try {
-      if (syncQueue.isNetworkOnline()) {
-        const res = await authenticatedFetch('/api/settings/admin_settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(settings)
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } else {
-        throw new Error('Offline');
-      }
-    } catch {
-      syncQueue.enqueue(
-        '/api/settings/admin_settings',
-        'POST',
-        settings,
-        'settings',
-        'Madrasah admin settings'
-      );
+    const revId = recordRevision('settings', 'admin', 'update', false);
+
+    const result = await syncQueue.executeMutation({
+      endpoint: '/api/settings/admin_settings',
+      method: 'POST',
+      payload: settings,
+      entityType: 'settings',
+      description: 'Madrasah admin settings'
+    });
+
+    if (result.status === 'synced') {
+      markRevisionSynced(revId);
     }
   },
 
@@ -565,26 +534,18 @@ export const dataRepository = {
 
   async saveTeacherSettings(settings: TeacherSettings): Promise<void> {
     safeSetItem(STORAGE_KEYS.TEACHER_SETTINGS, settings);
-    recordRevision('settings', 'teacher', 'update');
-    try {
-      if (syncQueue.isNetworkOnline()) {
-        const res = await authenticatedFetch('/api/settings/teacher_settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(settings)
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      } else {
-        throw new Error('Offline');
-      }
-    } catch {
-      syncQueue.enqueue(
-        '/api/settings/teacher_settings',
-        'POST',
-        settings,
-        'settings',
-        'Ustadh teacher settings'
-      );
+    const revId = recordRevision('settings', 'teacher', 'update', false);
+
+    const result = await syncQueue.executeMutation({
+      endpoint: '/api/settings/teacher_settings',
+      method: 'POST',
+      payload: settings,
+      entityType: 'settings',
+      description: 'Ustadh teacher settings'
+    });
+
+    if (result.status === 'synced') {
+      markRevisionSynced(revId);
     }
   },
 

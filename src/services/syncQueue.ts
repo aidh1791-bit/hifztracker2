@@ -12,10 +12,10 @@ export interface QueuedMutation {
   description: string;
   createdAt: string;
   clientTimestamp: string;
-  clientRevision: number;
+  uploadAttempt: number;
   attempts: number;
   lastError?: string;
-  status: 'pending' | 'syncing' | 'failed' | 'synced';
+  status: 'pending' | 'queued' | 'syncing' | 'failed' | 'synced';
 }
 
 const QUEUE_STORAGE_KEY = 'madrasah_offline_sync_queue_v1';
@@ -165,7 +165,7 @@ class SyncQueueService {
       description,
       createdAt: nowIso,
       clientTimestamp: nowIso,
-      clientRevision: 1,
+      uploadAttempt: 1,
       attempts: 0,
       status: 'pending'
     };
@@ -182,6 +182,92 @@ class SyncQueueService {
   }
 
   /**
+   * Unified One Mutation Path (Phase 3 & Phase 4):
+   * Exactly one operation ID is allocated per logical user mutation.
+   * If online, tries to execute immediately against Cloud SQL with idempotency headers.
+   * If offline or transient network error occurs, queues with that identical operation ID.
+   * Prevents premature 'synced' labelling (honest sync status: pending -> syncing -> synced | queued | failed).
+   */
+  public async executeMutation(params: {
+    endpoint: string;
+    method: 'POST' | 'PUT' | 'DELETE';
+    payload: any;
+    entityType: QueuedMutation['entityType'];
+    description: string;
+    operationId?: string;
+  }): Promise<{ success: boolean; status: QueuedMutation['status']; operationId: string; data?: any; error?: string }> {
+    const opId = params.operationId || `op-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const nowIso = new Date().toISOString();
+    const currentUid = auth.currentUser?.uid || 'offline-session';
+
+    const item: QueuedMutation = {
+      id: opId,
+      operationId: opId,
+      userId: currentUid,
+      endpoint: params.endpoint,
+      method: params.method,
+      payload: params.payload,
+      entityType: params.entityType,
+      description: params.description,
+      createdAt: nowIso,
+      clientTimestamp: nowIso,
+      uploadAttempt: 1,
+      attempts: 0,
+      status: 'pending'
+    };
+
+    if (this.isOnline && !this.simulatedOffline) {
+      item.status = 'syncing';
+      try {
+        const res = await authenticatedFetch(params.endpoint, {
+          method: params.method,
+          headers: {
+            'Content-Type': 'application/json',
+            'x-operation-id': opId,
+            'x-client-timestamp': nowIso
+          },
+          body: params.payload ? JSON.stringify({
+            ...params.payload,
+            operationId: opId,
+            clientTimestamp: nowIso
+          }) : undefined
+        });
+
+        if (res.ok) {
+          const resData = await res.json().catch(() => ({}));
+          item.status = 'synced';
+          try {
+            localStorage.setItem(LAST_SYNC_KEY, new Date().toISOString());
+          } catch {}
+          return { success: true, status: 'synced', operationId: opId, data: resData };
+        }
+
+        if (res.status === 400 || res.status === 401 || res.status === 403) {
+          const errData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+          item.status = 'failed';
+          item.lastError = errData.error || `HTTP ${res.status}`;
+          return { success: false, status: 'failed', operationId: opId, error: item.lastError };
+        }
+
+        // Server error (5xx): queue offline with exact same operationId
+        item.status = 'queued';
+        item.lastError = `Server responded ${res.status}`;
+      } catch (err: any) {
+        // Network failure: queue offline with exact same operationId
+        item.status = 'queued';
+        item.lastError = err?.message || 'Network fetch failure';
+      }
+    } else {
+      // Direct offline queueing
+      item.status = 'queued';
+    }
+
+    this.queue.push(item);
+    this.saveQueue();
+    return { success: true, status: 'queued', operationId: opId };
+  }
+
+  /**
    * Drain and execute all pending mutations against the backend Cloud SQL API.
    * Enforces:
    * - Operation-level idempotency headers (`x-operation-id`, `x-client-timestamp`)
@@ -192,7 +278,7 @@ class SyncQueueService {
       return { synced: 0, failed: 0 };
     }
 
-    const pending = this.queue.filter(q => q.status === 'pending' || q.status === 'failed');
+    const pending = this.queue.filter(q => q.status === 'pending' || q.status === 'queued' || q.status === 'failed');
     if (pending.length === 0) {
       return { synced: 0, failed: 0 };
     }
@@ -232,7 +318,7 @@ class SyncQueueService {
             'Content-Type': 'application/json',
             'x-operation-id': opId,
             'x-client-timestamp': item.clientTimestamp || item.createdAt,
-            'x-client-revision': String(item.attempts + 1)
+            'x-upload-attempt': String(item.attempts + 1)
           },
           body: item.payload ? JSON.stringify({
             ...item.payload,

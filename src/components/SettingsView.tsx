@@ -35,6 +35,7 @@ import {
 import { SimpleStorageMethod, StudentGmailMapping } from '../types';
 import { PushNotificationSettingsSection } from './PushNotificationSettingsSection';
 import { EndOfTermExportModal } from './EndOfTermExportModal';
+import { authenticatedFetch } from '../services/apiClient';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -144,6 +145,35 @@ export const SettingsView: React.FC = () => {
   const [notifyOnFajr, setNotifyOnFajr] = useState(parentSettings.notifyOnFajrRevision);
 
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [isExportingGdpr, setIsExportingGdpr] = useState(false);
+  const [exportFeedback, setExportFeedback] = useState<string | null>(null);
+
+  const handleParentGdprExport = async () => {
+    if (!selectedStudent?.id) return;
+    setIsExportingGdpr(true);
+    setExportFeedback(null);
+    try {
+      const res = await authenticatedFetch(`/api/export/student/${selectedStudent.id}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `student-gdpr-export-${selectedStudent.id}-${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        setExportFeedback('Export downloaded successfully.');
+      } else {
+        setExportFeedback('Export failed: Only authorised parents may export this student.');
+      }
+    } catch {
+      setExportFeedback('Network error while generating export.');
+    } finally {
+      setIsExportingGdpr(false);
+    }
+  };
 
   const handleStudentMappingChange = (studentId: string, field: 'studentGmail' | 'parentGmail', value: string) => {
     setStudentMappings(prev =>
@@ -1273,6 +1303,34 @@ export const SettingsView: React.FC = () => {
                 <span>Daily reminder for morning home Sabaq recitation before Madrasah</span>
               </label>
             </div>
+          </div>
+
+          {/* Section: UK GDPR Student Data Portability & Rights (Phase 8) */}
+          <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm space-y-3">
+            <div className="flex items-center gap-2 font-bold text-slate-900 text-sm border-b border-slate-100 pb-3">
+              <Download className="w-4 h-4 text-emerald-700" />
+              <span>UK GDPR Student Data Portability & Records Dossier</span>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Under UK GDPR Article 15 (Right of Access), you have the right to download a complete, machine-readable digital dossier of all recitation assessments, attendance logs, home study records, spiritual progress, and notice records held for <strong className="text-slate-800">{selectedStudent.name}</strong>.
+            </p>
+            <div className="pt-1 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={handleParentGdprExport}
+                disabled={isExportingGdpr}
+                className="px-4 py-2.5 bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-400 text-white rounded-xl font-bold text-xs shadow transition-all flex items-center gap-2"
+              >
+                <Download className={`w-3.5 h-3.5 ${isExportingGdpr ? 'animate-bounce' : ''}`} />
+                <span>{isExportingGdpr ? 'Generating Dossier...' : 'Download Full GDPR SAR Dossier (.json)'}</span>
+              </button>
+              <span className="text-[11px] text-slate-400">
+                Encrypted & auditable export
+              </span>
+            </div>
+            {exportFeedback && (
+              <p className="text-xs text-emerald-700 font-medium">{exportFeedback}</p>
+            )}
           </div>
 
           {/* Section 4: Live Push Notification & Event Settings */}

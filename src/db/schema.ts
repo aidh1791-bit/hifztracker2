@@ -123,8 +123,22 @@ export const processedOperations = pgTable('processed_operations', {
   uid: text('uid').notNull(),
   endpoint: text('endpoint').notNull(),
   status: text('status').notNull().default('completed'),
+  responseData: text('response_data'),
   clientTimestamp: text('client_timestamp'),
   createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const auditLog = pgTable('audit_log', {
+  id: serial('id').primaryKey(),
+  actorUid: text('actor_uid').notNull(),
+  actorRole: text('actor_role').notNull(),
+  action: text('action').notNull(), // 'read' | 'write' | 'delete'
+  resourceType: text('resource_type').notNull(), // 'hifz_record' | 'student' | 'evaluation' | etc.
+  resourceId: text('resource_id').notNull(),
+  studentId: text('student_id'),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  timestamp: timestamp('timestamp').defaultNow(),
 });
 
 export const parentStudentLinks = pgTable('parent_student_links', {
@@ -136,6 +150,34 @@ export const parentStudentLinks = pgTable('parent_student_links', {
   createdAt: timestamp('created_at').defaultNow(),
 }, (table) => [
   unique('parent_student_links_parent_student_unique').on(table.parentUid, table.studentId)
+]);
+
+export const appUsers = pgTable('app_users', {
+  id: serial('id').primaryKey(),
+  uid: text('uid').notNull().unique(),
+  email: text('email').notNull(),
+  role: text('role').notNull().default('unassigned'), // 'admin' | 'teacher' | 'parent' | 'unassigned' | 'disabled'
+  circleCode: text('circle_code'), // Optional Halqah circle assigned to teacher
+  displayName: text('display_name'),
+  disabled: boolean('disabled').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export const parentNoticeRecords = pgTable('parent_notice_records', {
+  id: serial('id').primaryKey(),
+  noticeVersion: text('notice_version').notNull(),
+  parentUid: text('parent_uid').notNull(),
+  studentId: text('student_id')
+    .notNull()
+    .references(() => students.id, { onDelete: 'cascade' }),
+  decision: text('decision').notNull(), // 'acknowledged' | 'withdrawn'
+  acceptedAt: timestamp('accepted_at').defaultNow(),
+  withdrawnAt: timestamp('withdrawn_at'),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+}, (table) => [
+  unique('parent_notice_parent_student_version_unique').on(table.parentUid, table.studentId, table.noticeVersion)
 ]);
 
 export const madrasahSettings = pgTable('madrasah_settings', {

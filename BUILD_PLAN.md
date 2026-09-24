@@ -132,7 +132,7 @@ Each item shows where it came from: *[Dev 1]*, *[Dev 2]*, *[Claude]* or *[Decisi
 
 1. Never present a feature as working unless it is built and tested.
 2. Never describe a security feature, such as encryption, unless it has been checked in the live setup. *[Dev 1]*
-3. Never send children's data to outside services, apart from the approved ones: Supabase, the email service and the hosting service.
+3. Never send children's data to outside services, apart from the approved ones: Cloud SQL (PostgreSQL), Firebase Authentication, the email service and the hosting service.
 4. Never use real children's data while building or testing. Use the test project.
 5. Never change the live database by hand. Every change to its structure is a migration saved in GitHub. *[Dev 1]*
 6. Never start Phase 3a-1 until DESIGN_GATE.md has been approved by Abu.
@@ -160,10 +160,10 @@ Each item shows where it came from: *[Dev 1]*, *[Dev 2]*, *[Claude]* or *[Decisi
 **Before the design gate (3a-0):**
 - Name the madrasah's data protection lead, and complete item 35a.
 - Set how long the madrasah keeps its copies of final reports (Decision K2).
-- Create the Supabase, email-service and Netlify accounts in the madrasah's name. Turn on two-step sign-in, and add a second trusted admin to each.
-- Choose Supabase's London region when creating projects.
+- Create the Cloud SQL, Firebase Auth, email-service and deployment accounts in the madrasah's name. Turn on two-step sign-in, and add a second trusted admin to each.
+- Choose Google Cloud's London region (europe-west2) when creating database projects.
 - Choose the email service, and arrange access to the madrasah's web address settings (DNS).
-- Use Supabase's free plan for the test project, and budget for the Pro plan before launch.
+- Use Cloud SQL Developer tier for the test environment, and budget for production before launch.
 - Ask Developer 2 to draft DESIGN_GATE.md, and Developer 1 to check it.
 
 **Before Phase 3b:**
@@ -181,8 +181,8 @@ Each item shows where it came from: *[Dev 1]*, *[Dev 2]*, *[Claude]* or *[Decisi
 ## Running costs
 
 - **Claude:** a paid plan (Pro or above) for Claude Code.
-- **Supabase:** the free plan is enough for the test project. Before launch, move to Pro, which starts at $25 a month. Pro keeps daily backups for 7 days, never pauses the project, and provides the sign-in time limits items 32b and 34g need.
-- **Hosting:** Netlify's free plan. Vercel's free plan is for personal, non-commercial use only.
+- **Cloud SQL & Firebase Auth:** Cloud SQL Developer edition with scale-to-zero free tier and automated backups. Firebase Authentication with email verification and token revocation.
+- **Hosting:** Node/Express deployment with secure HTTPS.
 - **Email service:** the cost depends on the service chosen.
 - **Text messages:** none until Phase 8.
 
@@ -232,7 +232,7 @@ Each item shows where it came from: *[Dev 1]*, *[Dev 2]*, *[Claude]* or *[Decisi
   - Where: meritTrophies.ts imports types that don't exist, and reads fields the app never records.
 - **15.** Sample data uses @example.com addresses, with a clear "Demo data" label and a one-tap clear button. *[Claude]*
 - **16.** Move all saving and loading into one data layer. *[Claude, Dev 1]*
-  - No screen talks directly to Supabase, the device's database or browser storage directly. Screens ask the data layer, which hides whether a save went online, joined the waiting list, clashed or failed.
+  - No screen talks directly to the backend database, device cache or browser storage directly. Screens ask the data layer (`apiClient.ts` / `dataRepository.ts`), which hides whether a save went online, joined the waiting list, clashed or failed.
   - Design it for later phases: record IDs are created on the device, times are stored in UTC, and each change is saved as a revision (item 52).
 - **17.** Correct the ḥadīth, and keep the same one on a given report. *[Dev 1, Claude]*
   - Suggested wording, for Abu to approve:
@@ -351,9 +351,9 @@ The design is saved as DESIGN_GATE.md. Developer 2 drafts it, Developer 1 checks
 
 **Goal:** a real app that teachers and parents can use on their own devices, while online, built against the test project with made-up children.
 
-- **26.** Supabase provides the database, logins and file storage, in the London region. *[Dev 1, Claude]*
-- **26a.** Connect a proper email-sending service. Supabase's built-in sender is for testing only, and delivers only to the project's own team. *[Claude]*
-- **26b.** Move to Supabase's Pro plan before launch. The free plan can pause a project after a quiet week, for example over the summer holiday. *[Claude]*
+- **26.** Google Cloud SQL (PostgreSQL with Drizzle ORM) provides the persistent database, and Firebase Authentication handles user identity and token lifecycle, in the London region. *[Dev 1, Claude]*
+- **26a.** Connect a verified email-sending service for madrasah communications and attendance alerts. *[Claude]*
+- **26b.** Cloud SQL Developer tier with automated backups and failover. *[Claude]*
 - **27.** Real accounts for the admin, teachers and parents. *[Dev 1, Claude]*
 - **27a.** Parents can only sign in with the email address the madrasah holds for them, after the admin sends an invitation. *[Claude]*
 - **27b.** A child can have more than one parent account, for example mother and father. *[Claude]*
@@ -392,13 +392,13 @@ The design is saved as DESIGN_GATE.md. Developer 2 drafts it, Developer 1 checks
 - **33c.** The change log keeps one line with no details about the child: "a student record was deleted by [admin] on [date]". *[Claude]*
 - **33d.** Saved class totals that contain no names stay as they are, so past class reports don't change. *[Claude]*
 - **33e.** Marks for a deleted child that arrive later from an offline device are refused, and the teacher sees a message. *[Claude]*
-- **33f.** Supabase's daily backups expire after 7 days, so deleted data is gone from them within a week. The admin can tell parents this. *[Claude]*
+- **33f.** Cloud SQL's automated backups and transaction logs retain snapshots, with restore instructions documented in `docs/ops/RESTORE.md`. *[Claude]*
 - **33g.** For a formal deletion request, the admin can skip the madrasah's copy after checking with the data protection lead. *[Claude, approved by Abu]*
 - **35b.** Before launch, the DPIA is finished and parents receive the privacy notice. *[Dev 1, Dev 2]*
 - **36.** The app goes online at a secure (HTTPS) address on Netlify. *[Claude]*
 - **36a.** A separate test site uses the test project. The live site is set up only after Phase 3a-2 passes. *[Dev 1]*
 - **59.** Every change to the database's structure is a numbered migration file saved in GitHub. *[Dev 1]*
-- **60.** A second online Supabase project, filled with made-up children, is used for building and security tests. Abu's computer doesn't need Docker. *[Claude, Dev 1]*
+- **60.** Cloud SQL test instance, filled with made-up children, is used for building and security tests. *[Claude, Dev 1]*
 - **61.** Repeated wrong codes or passwords slow down or lock further attempts. *[Dev 2]*
 - **62.** Backups: a written restore procedure, and a test restore into the test project before launch. *[Dev 1]*
 
@@ -539,7 +539,7 @@ Real use with children's data starts only when all of these are done:
 - Phases 0 to 5 are finished, and every phase's checks pass.
 - Audit checks 1 to 34 pass, and check 35 (the test restore) has been done.
 - Item 35b is complete: the DPIA is finished, and parents have the privacy notice.
-- Supabase's Pro plan is active, and the email service sends from the madrasah's address.
+- Cloud SQL production instance is active, and the email service sends from the madrasah's address.
 - A staff mashwarah has agreed the scoring weights, grade boundaries, trophy titles and mistake definitions, replacing the provisional values in item 25a.
 - Abu has approved the ḥadīth wording for the approved-content file (item 17a).
 - A fluent Urdu speaker has signed off the translations.
@@ -568,7 +568,7 @@ Real use with children's data starts only when all of these are done:
 
 ## Phase 8: Text-message sign-in (later update)
 
-- **27h.** A text-message provider that works with Supabase, such as Twilio, is set up in the madrasah's name. *[Decision L]*
+- **27h.** A text-message provider that integrates with Firebase Auth SMS, such as Twilio or Google Cloud Identity Platform, is set up in the madrasah's name. *[Decision L]*
 - **27i.** Parents' mobile numbers are checked, and the admin page shows which numbers have been confirmed. *[Claude]*
 - **27j.** Codes go only to UK mobile numbers, and only a limited number can be sent each hour, so nobody can misuse the sign-in page to run up the bill. *[Claude]*
 - **27k.** The provider is added to the DPIA, and its data-processing agreement is signed, before the switch goes on. *[Claude]*

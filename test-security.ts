@@ -23,9 +23,12 @@
 import http from 'http';
 import { createExpressApp } from './server.ts';
 import { requireStudentAccess, requireAdmin, requireAuth, AuthRequest } from './src/middleware/auth.ts';
+import { requireIdempotency } from './src/middleware/idempotency.ts';
+import { HifzRecordSchema } from './src/validation/schemas.ts';
 import {
   isOperationProcessed,
   recordProcessedOperation,
+  getProcessedOperation,
   linkParentToStudent,
   getLinkedStudentIdsForParent,
   saveHifzRecord,
@@ -516,6 +519,102 @@ async function runAudit() {
     assert(
       !isAllowedByVerifiedRule,
       'Test 18: Unverified email (email_verified: false) cannot establish parent or teacher authority'
+    );
+
+    // ----------------------------------------------------
+    // Test 19: Idempotency Replay Return Cached Response
+    // ----------------------------------------------------
+    const idempotencyTestOpId = `test-op-${Date.now()}`;
+    const opOwnerUid = 'user-owner-123';
+    const mockCachedResponse = { saved: true, recordId: 'hifz-abc' };
+
+    await recordProcessedOperation(
+      idempotencyTestOpId,
+      opOwnerUid,
+      '/api/records/hifz',
+      new Date().toISOString(),
+      mockCachedResponse
+    );
+
+    let idempotencyCachedHit = false;
+    let cachedHitStatus = 0;
+    let cachedHitBody: any = null;
+
+    const mockIdempotencyReq: any = {
+      headers: { 'x-operation-id': idempotencyTestOpId },
+      user: { uid: opOwnerUid, role: 'teacher' }
+    };
+    const mockIdempotencyRes: any = {
+      status: (code: number) => {
+        cachedHitStatus = code;
+        return {
+          json: (body: any) => {
+            idempotencyCachedHit = true;
+            cachedHitBody = body;
+          }
+        };
+      }
+    };
+
+    await requireIdempotency(mockIdempotencyReq, mockIdempotencyRes, () => {});
+    assert(
+      idempotencyCachedHit && cachedHitStatus === 200 && cachedHitBody?.recordId === 'hifz-abc',
+      'Test 19: requireIdempotency middleware returns cached 200 response on duplicate operationId without re-executing'
+    );
+
+    // ----------------------------------------------------
+    // Test 20: Idempotency Replay by Different UID Rejection (409 Conflict)
+    // ----------------------------------------------------
+    let crossTenantConflict = false;
+    let conflictStatus = 0;
+    const mockAttackerReq: any = {
+      headers: { 'x-operation-id': idempotencyTestOpId },
+      user: { uid: 'attacker-uid-456', role: 'teacher' }
+    };
+    const mockConflictRes: any = {
+      status: (code: number) => {
+        conflictStatus = code;
+        return {
+          json: () => {
+            if (code === 409) crossTenantConflict = true;
+          }
+        };
+      }
+    };
+
+    await requireIdempotency(mockAttackerReq, mockConflictRes, () => {});
+    assert(
+      crossTenantConflict && conflictStatus === 409,
+      'Test 20: Operation ID belonging to another user is rejected with 409 Conflict'
+    );
+
+    // ----------------------------------------------------
+    // Test 21: Zod Schema Input Validation
+    // ----------------------------------------------------
+    const invalidHifzRecord = {
+      studentId: 'std-1',
+      date: 'invalid-date-format', // invalid date regex
+      day: 'Monday',
+      sabaqMistakes: -5 // invalid negative mistakes
+    };
+    const validationResult = HifzRecordSchema.safeParse(invalidHifzRecord);
+    assert(
+      !validationResult.success && validationResult.error.issues.length >= 2,
+      'Test 21: Zod schema rejects malformed date format and negative mistakes with validation issues'
+    );
+
+    const validHifzRecord = {
+      studentId: 'std-1',
+      date: '2026-09-23',
+      day: 'Wednesday',
+      attendance: 'present' as const,
+      sabaqAmount: 'Para 1, Page 5',
+      sabaqMistakes: 1
+    };
+    const validResult = HifzRecordSchema.safeParse(validHifzRecord);
+    assert(
+      validResult.success && validResult.data.date === '2026-09-23',
+      'Test 21b: Zod schema accepts valid recitation record payload'
     );
 
   } finally {

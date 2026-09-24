@@ -1,4 +1,4 @@
-export type UserRole = 'admin' | 'teacher' | 'parent' | 'student' | 'unassigned' | 'unauthenticated' | 'anonymous';
+export type UserRole = 'admin' | 'teacher' | 'parent' | 'student' | 'unassigned' | 'disabled' | 'unauthenticated' | 'anonymous';
 
 export type DayOfWeek = 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday' | 'Sunday';
 
@@ -152,7 +152,7 @@ export interface Student {
 
 export type ActiveTab = 'dashboard' | 'daily-hifz' | 'attendance' | 'home-tarbiyah' | 'weekly-report' | 'settings' | 'admin-control';
 
-export type PortalMode = 'landing' | 'student-parent' | 'teacher' | 'admin';
+export type PortalMode = 'landing' | 'student-parent' | 'teacher' | 'admin' | 'parent';
 
 export interface TeacherAccount {
   id: string;
@@ -228,9 +228,11 @@ export interface AdminSettings {
 }
 
 export interface LoggedInUser {
+  id?: string;
   role: UserRole;
   email?: string;
   displayName?: string;
+  name?: string;
   photoURL?: string;
   uid?: string;
   teacherId?: string;

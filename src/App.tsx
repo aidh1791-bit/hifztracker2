@@ -13,12 +13,22 @@ import { LandingPortalView } from './components/LandingPortalView';
 import { AdminControlView } from './components/AdminControlView';
 import { SecurityArchitectureModal } from './components/SecurityArchitectureModal';
 import { QuickAssessmentModal } from './components/QuickAssessmentModal';
+import { UnassignedAccountView } from './components/UnassignedAccountView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { PlusCircle } from 'lucide-react';
 
 const AppContent: React.FC = () => {
-  const { activeTab, userRole, portalMode, adminSettings } = useHifz();
+  const { activeTab, userRole, portalMode, adminSettings, firebaseUser } = useHifz();
   const [isQuickAssessmentOpen, setIsQuickAssessmentOpen] = useState(false);
+
+  // If an authenticated user has no assigned role / circle or is disabled (Phase 5 & 6)
+  if (firebaseUser && (userRole === 'unassigned' || userRole === 'disabled')) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col justify-between text-slate-100">
+        <UnassignedAccountView />
+      </div>
+    );
+  }
 
   // If in Landing mode, display the dedicated Student/Parent vs Teacher vs Admin Gateway
   if (portalMode === 'landing') {

@@ -8,9 +8,12 @@ import {
   weeklyEvaluations,
   madrasahSettings,
   processedOperations,
-  parentStudentLinks
+  parentStudentLinks,
+  auditLog,
+  appUsers,
+  parentNoticeRecords
 } from './schema.ts';
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc, and, inArray } from 'drizzle-orm';
 import {
   INITIAL_STUDENTS,
   INITIAL_HIFZ_RECORDS,
@@ -21,74 +24,273 @@ import {
 } from '../data/initialData.ts';
 import { DEFAULT_TEACHER_SETTINGS } from '../context/HifzContext.tsx';
 
-// In-memory fallback sets for local execution or environments where DDL hasn't migrated yet
-const inMemoryProcessedOps = new Set<string>();
-const inMemoryParentLinks = new Map<string, Set<string>>();
+// In-memory cache for fast lookups (not an authority layer)
+const inMemoryProcessedOps = new Map<string, { uid: string; responseData?: any }>();
 
 // --- Processed Operations (Idempotency) ---
-export async function isOperationProcessed(operationId: string): Promise<boolean> {
+export async function isOperationProcessed(operationId: string, uid?: string): Promise<boolean> {
   if (!operationId) return false;
-  if (inMemoryProcessedOps.has(operationId)) return true;
+  if (inMemoryProcessedOps.has(operationId)) {
+    const mem = inMemoryProcessedOps.get(operationId)!;
+    if (uid && mem.uid !== uid) return false;
+    return true;
+  }
   try {
     const existing = await db.select().from(processedOperations).where(eq(processedOperations.operationId, operationId));
     if (existing.length > 0) {
-      inMemoryProcessedOps.add(operationId);
+      inMemoryProcessedOps.set(operationId, { uid: existing[0].uid, responseData: existing[0].responseData ? JSON.parse(existing[0].responseData) : null });
+      if (uid && existing[0].uid !== uid) return false;
       return true;
     }
   } catch (err) {
-    // Table might be in provisioning; check in-memory cache
     return inMemoryProcessedOps.has(operationId);
   }
   return false;
+}
+
+export async function getProcessedOperation(operationId: string) {
+  if (!operationId) return null;
+  if (inMemoryProcessedOps.has(operationId)) {
+    const mem = inMemoryProcessedOps.get(operationId)!;
+    return {
+      operationId,
+      uid: mem.uid,
+      status: 200,
+      response: mem.responseData ?? { success: true, idempotent: true }
+    };
+  }
+  try {
+    const existing = await db.select().from(processedOperations).where(eq(processedOperations.operationId, operationId));
+    if (existing.length > 0) {
+      const data = existing[0].responseData ? JSON.parse(existing[0].responseData) : null;
+      inMemoryProcessedOps.set(operationId, { uid: existing[0].uid, responseData: data });
+      return {
+        operationId,
+        uid: existing[0].uid,
+        status: 200,
+        response: data ?? { success: true, idempotent: true }
+      };
+    }
+  } catch (err) {
+    // Non-fatal
+  }
+  return null;
 }
 
 export async function recordProcessedOperation(
   operationId: string,
   uid: string,
   endpoint: string,
-  clientTimestamp?: string
+  clientTimestamp?: string,
+  responseData?: any
 ): Promise<void> {
   if (!operationId) return;
-  inMemoryProcessedOps.add(operationId);
+  inMemoryProcessedOps.set(operationId, { uid, responseData });
   try {
     await db.insert(processedOperations).values({
       operationId,
       uid,
       endpoint,
       status: 'completed',
+      responseData: responseData ? JSON.stringify(responseData) : null,
       clientTimestamp: clientTimestamp || new Date().toISOString()
     }).onConflictDoNothing();
   } catch (err) {
-    // Non-fatal if table not migrated or duplicate
+    // Non-fatal
   }
 }
 
 // --- Parent-Student Links (Server-Authoritative Parent Mapping) ---
+// FAIL-CLOSED: If the database is unreachable, this throws AUTH_DB_UNAVAILABLE.
+// The in-memory cache is never used as an authority fallback.
 export async function getLinkedStudentIdsForParent(parentUid: string): Promise<string[]> {
-  const memSet = inMemoryParentLinks.get(parentUid) || new Set<string>();
   try {
     const links = await db.select().from(parentStudentLinks).where(eq(parentStudentLinks.parentUid, parentUid));
-    for (const l of links) {
-      memSet.add(l.studentId);
-    }
-    return Array.from(memSet);
-  } catch (err) {
-    return Array.from(memSet);
+    return links.map(l => l.studentId);
+  } catch (err: any) {
+    console.error('[auth] Database lookup failed for parent links:', err);
+    throw new Error('AUTH_DB_UNAVAILABLE', { cause: err });
   }
 }
 
 export async function linkParentToStudent(parentUid: string, studentId: string): Promise<void> {
-  if (!inMemoryParentLinks.has(parentUid)) {
-    inMemoryParentLinks.set(parentUid, new Set<string>());
-  }
-  inMemoryParentLinks.get(parentUid)!.add(studentId);
   try {
     await db.insert(parentStudentLinks).values({
       parentUid,
       studentId
     }).onConflictDoNothing();
   } catch (err) {
-    // Stored in inMemoryParentLinks as durable process fallback
+    console.error(`[auth] Failed to link parent ${parentUid} to student ${studentId}:`, err);
+  }
+}
+
+// --- Audit Logging ---
+export async function recordAuditLog(entry: {
+  actorUid: string;
+  actorRole: string;
+  action: 'read' | 'write' | 'delete';
+  resourceType: string;
+  resourceId: string;
+  studentId?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}): Promise<void> {
+  try {
+    await db.insert(auditLog).values({
+      actorUid: entry.actorUid,
+      actorRole: entry.actorRole,
+      action: entry.action,
+      resourceType: entry.resourceType,
+      resourceId: entry.resourceId,
+      studentId: entry.studentId || null,
+      ipAddress: entry.ipAddress || null,
+      userAgent: entry.userAgent || null,
+    });
+  } catch (err) {
+    // Non-fatal logging failure
+    console.warn('[AuditLog] Notice writing audit log entry:', err);
+  }
+}
+
+// --- Unlink Parent from Student ---
+export async function unlinkParentFromStudent(parentUid: string, studentId: string): Promise<void> {
+  try {
+    await db.delete(parentStudentLinks).where(
+      and(eq(parentStudentLinks.parentUid, parentUid), eq(parentStudentLinks.studentId, studentId))
+    );
+  } catch (err) {
+    console.error(`[auth] Failed to unlink parent ${parentUid} from student ${studentId}:`, err);
+    throw err;
+  }
+}
+
+// --- App Users (Pilot Operations Layer: Onboarding & Revocation without SQL) ---
+export async function getAppUserByUid(uid: string) {
+  try {
+    const res = await db.select().from(appUsers).where(eq(appUsers.uid, uid));
+    return res[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function listAllAppUsers() {
+  try {
+    return await db.select().from(appUsers).orderBy(desc(appUsers.createdAt));
+  } catch {
+    return [];
+  }
+}
+
+export async function upsertAppUser(data: {
+  uid: string;
+  email: string;
+  role?: string;
+  circleCode?: string | null;
+  displayName?: string | null;
+}) {
+  try {
+    const existing = await getAppUserByUid(data.uid);
+    if (existing) {
+      await db.update(appUsers).set({
+        email: data.email,
+        role: data.role || existing.role,
+        circleCode: data.circleCode !== undefined ? data.circleCode : existing.circleCode,
+        displayName: data.displayName !== undefined ? data.displayName : existing.displayName,
+        updatedAt: new Date()
+      }).where(eq(appUsers.uid, data.uid));
+      return await getAppUserByUid(data.uid);
+    } else {
+      await db.insert(appUsers).values({
+        uid: data.uid,
+        email: data.email,
+        role: data.role || 'unassigned',
+        circleCode: data.circleCode || null,
+        displayName: data.displayName || null,
+      });
+      return await getAppUserByUid(data.uid);
+    }
+  } catch (err) {
+    console.error('[UserDirectory] Failed to upsert app user:', err);
+    throw err;
+  }
+}
+
+export async function updateUserRole(uid: string, role: string, circleCode?: string | null) {
+  try {
+    await db.update(appUsers).set({
+      role,
+      circleCode: circleCode !== undefined ? circleCode : null,
+      disabled: role === 'disabled',
+      updatedAt: new Date()
+    }).where(eq(appUsers.uid, uid));
+    return await getAppUserByUid(uid);
+  } catch (err) {
+    console.error(`[UserDirectory] Failed to update role for user ${uid}:`, err);
+    throw err;
+  }
+}
+
+export async function revokeUserAccess(uid: string) {
+  try {
+    await db.update(appUsers).set({
+      disabled: true,
+      role: 'disabled',
+      updatedAt: new Date()
+    }).where(eq(appUsers.uid, uid));
+    return true;
+  } catch (err) {
+    console.error(`[UserDirectory] Failed to revoke access for ${uid}:`, err);
+    throw err;
+  }
+}
+
+// --- Parent Notice / Governance Records (Phase 7) ---
+export async function recordParentNoticeDecision(entry: {
+  parentUid: string;
+  studentId: string;
+  noticeVersion: string;
+  decision: 'acknowledged' | 'withdrawn';
+  ipAddress?: string;
+  userAgent?: string;
+}) {
+  try {
+    const existing = await db.select().from(parentNoticeRecords).where(
+      and(
+        eq(parentNoticeRecords.parentUid, entry.parentUid),
+        eq(parentNoticeRecords.studentId, entry.studentId),
+        eq(parentNoticeRecords.noticeVersion, entry.noticeVersion)
+      )
+    );
+    if (existing.length > 0) {
+      await db.update(parentNoticeRecords).set({
+        decision: entry.decision,
+        withdrawnAt: entry.decision === 'withdrawn' ? new Date() : null,
+        ipAddress: entry.ipAddress || null,
+        userAgent: entry.userAgent || null,
+      }).where(eq(parentNoticeRecords.id, existing[0].id));
+    } else {
+      await db.insert(parentNoticeRecords).values({
+        parentUid: entry.parentUid,
+        studentId: entry.studentId,
+        noticeVersion: entry.noticeVersion,
+        decision: entry.decision,
+        ipAddress: entry.ipAddress || null,
+        userAgent: entry.userAgent || null,
+      });
+    }
+    return { success: true };
+  } catch (err) {
+    console.error('[ParentNotice] Failed to record parent notice decision:', err);
+    throw err;
+  }
+}
+
+export async function getParentNoticeDecisions(studentId: string) {
+  try {
+    return await db.select().from(parentNoticeRecords).where(eq(parentNoticeRecords.studentId, studentId));
+  } catch {
+    return [];
   }
 }
 
@@ -151,6 +353,16 @@ export async function getStudentById(studentId: string) {
   }
 }
 
+export async function getStudentsByIds(ids: string[]) {
+  if (!ids || ids.length === 0) return [];
+  try {
+    return await db.select().from(students).where(inArray(students.id, ids)).orderBy(students.name);
+  } catch (error) {
+    console.error('Error fetching students by ids:', error);
+    throw new Error('Failed to retrieve scoped students.', { cause: error });
+  }
+}
+
 export async function getGdprSarExport(studentId: string) {
   try {
     const student = await getStudentById(studentId);
@@ -166,8 +378,13 @@ export async function getGdprSarExport(studentId: string) {
         student_id: student.id,
         export_timestamp: new Date().toISOString(),
         governing_framework: 'UK General Data Protection Regulation (UK GDPR) & Data Protection Act 2018',
-        ico_childrens_code_aligned: true,
-        legal_basis: 'Article 6(1)(b) Contract / Educational Delivery & Article 9(2)(d) Not-for-profit Religious Body',
+        compliance_notes: {
+          lawful_basis: 'pending_confirmation (Article 6(1)(b) Contract & Article 9(2)(d) Not-for-profit Religious Body)',
+          ico_childrens_code: 'assessment_in_progress',
+          dpia_completed: false,
+          dpia_date: null,
+          governance_document: 'PILOT_READINESS.md'
+        },
         student_profile: student,
         daily_hifz_recitations: hifz,
         home_learning_records: home,
@@ -200,6 +417,16 @@ export async function getHifzRecords(studentId?: string) {
   } catch (error) {
     console.error('Error fetching hifz records:', error);
     throw new Error('Failed to retrieve recitation records.', { cause: error });
+  }
+}
+
+export async function getHifzRecordsForStudents(ids: string[]) {
+  if (!ids || ids.length === 0) return [];
+  try {
+    return await db.select().from(dailyHifzRecords).where(inArray(dailyHifzRecords.studentId, ids)).orderBy(desc(dailyHifzRecords.date));
+  } catch (error) {
+    console.error('Error fetching hifz records for students:', error);
+    throw new Error('Failed to retrieve scoped recitation records.', { cause: error });
   }
 }
 
@@ -248,6 +475,16 @@ export async function getHomeLearning(studentId?: string) {
   }
 }
 
+export async function getHomeLearningForStudents(ids: string[]) {
+  if (!ids || ids.length === 0) return [];
+  try {
+    return await db.select().from(dailyHomeLearningRecords).where(inArray(dailyHomeLearningRecords.studentId, ids)).orderBy(desc(dailyHomeLearningRecords.date));
+  } catch (error) {
+    console.error('Error fetching home learning for students:', error);
+    throw new Error('Failed to retrieve scoped home learning records.', { cause: error });
+  }
+}
+
 export async function saveHomeLearning(record: typeof dailyHomeLearningRecords.$inferInsert) {
   try {
     const upserted = await db.insert(dailyHomeLearningRecords)
@@ -282,6 +519,16 @@ export async function getTarbiyah(studentId?: string) {
   } catch (error) {
     console.error('Error fetching tarbiyah records:', error);
     throw new Error('Failed to retrieve tarbiyah records.', { cause: error });
+  }
+}
+
+export async function getTarbiyahForStudents(ids: string[]) {
+  if (!ids || ids.length === 0) return [];
+  try {
+    return await db.select().from(dailyTarbiyahRecords).where(inArray(dailyTarbiyahRecords.studentId, ids)).orderBy(desc(dailyTarbiyahRecords.date));
+  } catch (error) {
+    console.error('Error fetching tarbiyah for students:', error);
+    throw new Error('Failed to retrieve scoped tarbiyah records.', { cause: error });
   }
 }
 
@@ -323,6 +570,16 @@ export async function getEvaluations(studentId?: string) {
   } catch (error) {
     console.error('Error fetching evaluations:', error);
     throw new Error('Failed to retrieve weekly evaluations.', { cause: error });
+  }
+}
+
+export async function getEvaluationsForStudents(ids: string[]) {
+  if (!ids || ids.length === 0) return [];
+  try {
+    return await db.select().from(weeklyEvaluations).where(inArray(weeklyEvaluations.studentId, ids)).orderBy(desc(weeklyEvaluations.weekCommencing));
+  } catch (error) {
+    console.error('Error fetching evaluations for students:', error);
+    throw new Error('Failed to retrieve scoped weekly evaluations.', { cause: error });
   }
 }
 

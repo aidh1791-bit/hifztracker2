@@ -38,6 +38,7 @@ import { DEFAULT_ISLAMIC_TROPHIES } from '../utils/meritTrophies';
 import { buildMailtoUrl } from '../utils/exportHelpers';
 import { SafeDeleteStudentModal } from './SafeDeleteStudentModal';
 import { dataRepository } from '../services/dataRepository';
+import { AdminUserDirectoryView } from './AdminUserDirectoryView';
 
 export const AdminControlView: React.FC = () => {
   const {
@@ -55,7 +56,7 @@ export const AdminControlView: React.FC = () => {
     simulateEmailSent
   } = useHifz();
 
-  const [activeSubTab, setActiveSubTab] = useState<'institute' | 'permissions' | 'trophies' | 'teachers' | 'students' | 'add-student'>('institute');
+  const [activeSubTab, setActiveSubTab] = useState<'institute' | 'permissions' | 'trophies' | 'teachers' | 'students' | 'add-student' | 'directory'>('institute');
   const [studentToDelete, setStudentToDelete] = useState<Student | null>(null);
 
   // Islamic Trophy Management State
@@ -415,6 +416,19 @@ export const AdminControlView: React.FC = () => {
           >
             <Users className="w-4 h-4" />
             <span>Enrolled Students Roster ({students.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('directory')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap ${
+              activeSubTab === 'directory'
+                ? 'bg-amber-400 text-slate-950 shadow-md'
+                : 'bg-slate-800/80 text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>User Accounts & Onboarding</span>
           </button>
 
           <button
@@ -1696,6 +1710,9 @@ export const AdminControlView: React.FC = () => {
           </form>
         </div>
       )}
+
+      {/* User Accounts & Onboarding View (Phase 6) */}
+      {activeSubTab === 'directory' && <AdminUserDirectoryView />}
 
       {/* Safe Student Deletion & Quranic Archive Modal */}
       <SafeDeleteStudentModal
