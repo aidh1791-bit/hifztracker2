@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { sql } from 'drizzle-orm';
 import { db } from './src/db/index.ts';
+import { runMigrations } from './src/db/migrate.ts';
 import {
   getAllStudents,
   getStudentsByIds,
@@ -653,6 +654,13 @@ export function createExpressApp() {
 }
 
 async function startServer() {
+  // Execute database schema migrations before accepting requests
+  try {
+    await runMigrations();
+  } catch (migErr) {
+    console.error('Failed to run database migrations during startup:', migErr);
+  }
+
   const app = createExpressApp();
   const PORT = 3000;
 
